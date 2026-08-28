@@ -1,0 +1,16 @@
+name: qwen3-8-27b
+hf_id: Qwen/Qwen3.8-27B
+image: nvcr.io/nvidia/vllm:26.06-py3
+entrypoint: serve-prefix
+shm_size: 32g
+est_size_gb: 56           # actual HF blob sum: 51.8 GiB (2026-08-28)
+health_timeout_secs: 900
+# NOTE: vllm_args are provisional (modeled on qwen3-coder-next-fp8).
+# Tune before first swap; tool-call-parser for qwen3_5 arch unverified.
+vllm_args:
+  max-model-len: 65536
+  gpu-memory-utilization: 0.90
+  enable-prefix-caching: true
+  enable-auto-tool-choice: true
+  tool-call-parser: qwen3_coder
+  max-num-seqs: 4
