@@ -1,0 +1,20 @@
+# Muse Glimmer 30B
+name: muse-glimmer-30b
+hf_id: meta-models/Muse-Glimmer-30B
+image: vllm/vllm-openai:muse-glimmer
+entrypoint: bare                # vllm-openai image entrypoint IS the api server; pass model id directly
+shm_size: 16g
+est_size_gb: 56                 # measured: 56G in HF cache 2026-08-28
+health_timeout_secs: 900
+vllm_args:
+  max-model-len: 65536
+  kv-cache-memory: 63571814912
+  enable-prefix-caching: true
+  enable-auto-tool-choice: true
+  tool-call-parser: muse_glimmer
+  reasoning-parser: muse_glimmer
+  max-num-seqs: 8
+notes: >
+  Tuning from legacy run-vllm-glimmer.sh (explicit kv-cache-memory).
+  Legacy run-vllm-gemma.sh was a misnamed earlier variant of this same model
+  (gpu-memory-utilization 0.88, no kv-cache-memory) and is superseded by this entry.

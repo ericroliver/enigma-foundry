@@ -1,0 +1,790 @@
+#!/usr/bin/env python3
+"""
+enigma-foundry — vLLM model server manager for the spark host.
+
+Manages a catalog of vLLM-served models behind one stable endpoint:
+container `vllm-server`, port 8000, served alias `enigma/default`.
+
+Subcommands: list | status | swap | download | remove | logs
+
+swap/download are dispatched to detached workers so an SSH caller (e.g. an
+agent being served by the very model being replaced) can fire-and-forget,
+lose its connection mid-swap, then poll `status` after reconnecting.
+Every mutating action journals to state/ and logs to logs/.
+"""
+
+import argparse
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
+from datetime import datetime, timezone
+
+import yaml
+
+# --------------- global constants (the agent-survival contract) ---------------
+PORT = 8000
+ALIAS = "enigma/default"
+CONTAINER = "vllm-server"
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CATALOG_DIR = os.path.join(ROOT, "catalog")
+STATE_DIR = os.path.join(ROOT, "state")
+LOGS_DIR = os.path.join(ROOT, "logs")
+
+CURRENT_JSON = os.path.join(STATE_DIR, "current.json")
+PENDING_JSON = os.path.join(STATE_DIR, "swap-pending.json")
+SWAP_LOCK = os.path.join(STATE_DIR, "swap.lock")
+DOWNLOAD_LOCK = os.path.join(STATE_DIR, "download.lock")
+
+HF_HOME = os.path.expanduser("~/.cache/huggingface")
+HF_HUB = os.path.join(HF_HOME, "hub")
+HEALTH_URL = f"http://localhost:{PORT}/v1/models"
+
+DEFAULT_HEALTH_TIMEOUT = 900   # s, cached weights
+DOWNLOAD_HARD_CAP = 6 * 3600   # s, absolute cap when downloading weights
+POLL_INTERVAL = 10             # s
+SPAWN_GRACE = 30               # s a "spawning" lock is considered alive
+
+FORBIDDEN_VLLM_ARGS = {"host", "port", "served-model-name", "served_model_name"}
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+PROGRESS_RE = re.compile(
+    r"\d+(\.\d+)?%|it/s|[KMGT]i?B/s|Downloading|Fetching|snapshot_download", re.I
+)
+
+
+class FoundryError(Exception):
+    pass
+
+
+def now_iso():
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def ts_id():
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def run(cmd):
+    """Run cmd (list form), capture output, return CompletedProcess. Never raises."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", "timeout")
+
+
+def atomic_write_json(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
+# ------------------------------- catalog -------------------------------
+
+def catalog_path(name):
+    return os.path.join(CATALOG_DIR, f"{name}.yaml")
+
+
+def validate_entry(name, data):
+    if not isinstance(data, dict):
+        raise FoundryError(f"catalog entry '{name}': not a mapping")
+    if data.get("name") != name:
+        raise FoundryError(f"catalog entry '{name}': 'name' field must match filename")
+    for field in ("hf_id", "image", "entrypoint", "shm_size", "vllm_args", "est_size_gb"):
+        if field not in data:
+            raise FoundryError(f"catalog entry '{name}': missing required field '{field}'")
+    if data["entrypoint"] not in ("serve-prefix", "bare"):
+        raise FoundryError(f"catalog entry '{name}': entrypoint must be serve-prefix|bare")
+    if not re.match(r"^\d+[gmk]$", str(data["shm_size"])):
+        raise FoundryError(f"catalog entry '{name}': shm_size must look like 16g/32g")
+    if not isinstance(data["vllm_args"], dict):
+        raise FoundryError(f"catalog entry '{name}': vllm_args must be a mapping")
+    bad = FORBIDDEN_VLLM_ARGS & {str(k) for k in data["vllm_args"]}
+    if bad:
+        raise FoundryError(
+            f"catalog entry '{name}': vllm_args must not set {sorted(bad)} — "
+            "host/port/served-model-name are global constants"
+        )
+    try:
+        float(data["est_size_gb"])
+    except (TypeError, ValueError):
+        raise FoundryError(f"catalog entry '{name}': est_size_gb must be numeric")
+    try:
+        data["health_timeout_secs"] = int(data.get("health_timeout_secs", DEFAULT_HEALTH_TIMEOUT))
+    except (TypeError, ValueError):
+        raise FoundryError(f"catalog entry '{name}': health_timeout_secs must be an int")
+    return data
+
+
+def load_entry(name):
+    if not NAME_RE.match(name):
+        raise FoundryError(f"invalid model name '{name}' (use lowercase a-z0-9-)")
+    path = catalog_path(name)
+    if not os.path.exists(path):
+        raise FoundryError(f"no catalog entry for '{name}' (looked in {CATALOG_DIR})")
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        raise FoundryError(f"catalog entry '{name}': YAML parse error: {e}")
+    return validate_entry(name, data)
+
+
+def load_catalog():
+    entries = {}
+    if os.path.isdir(CATALOG_DIR):
+        for fn in sorted(os.listdir(CATALOG_DIR)):
+            if fn.endswith((".yaml", ".yml")):
+                name = fn.rsplit(".", 1)[0]
+                entries[name] = load_entry(name)
+    return entries
+
+
+def hub_dir(hf_id):
+    return os.path.join(HF_HUB, "models--" + hf_id.replace("/", "--"))
+
+
+def weights_cached(entry):
+    d = hub_dir(entry["hf_id"])
+    if not os.path.isdir(d):
+        return False
+    for _root, _dirs, files in os.walk(d):
+        if files:
+            return True
+    return False
+
+
+def image_present(image):
+    return run(["docker", "image", "inspect", image]).returncode == 0
+
+
+def images_present():
+    p = run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"])
+    return set(p.stdout.split()) if p.returncode == 0 else set()
+
+
+# ---------------------------- live server state ----------------------------
+
+def _as_list(v):
+    if v is None:
+        return []
+    if isinstance(v, str):
+        return [v]
+    return list(v)
+
+
+def container_info():
+    """dict(status, image, cmdline, started_at) or None if container absent."""
+    p = run(["docker", "inspect", CONTAINER])
+    if p.returncode != 0:
+        return None
+    try:
+        c = json.loads(p.stdout)[0]
+        cfg = c.get("Config", {})
+        cmdline = " ".join(str(x) for x in _as_list(cfg.get("Entrypoint")) + _as_list(cfg.get("Cmd")))
+        return {
+            "status": c.get("State", {}).get("Status", "unknown"),
+            "image": cfg.get("Image", ""),
+            "cmdline": cmdline,
+            "started_at": c.get("State", {}).get("StartedAt", ""),
+        }
+    except (json.JSONDecodeError, IndexError):
+        return None
+
+
+def detect_live(entries=None):
+    """Match the running container to a catalog entry. Returns (name|None, info|None)."""
+    info = container_info()
+    if info is None or info["status"] != "running":
+        return None, info
+    entries = entries if entries is not None else load_catalog()
+    for name, e in entries.items():
+        if e["image"] == info["image"] and e["hf_id"] in info["cmdline"]:
+            return name, info
+    return None, info
+
+
+def health_ok():
+    try:
+        with urllib.request.urlopen(HEALTH_URL, timeout=5) as r:
+            if r.status != 200:
+                return False
+            data = json.loads(r.read().decode())
+        return ALIAS in [m.get("id") for m in data.get("data", [])]
+    except Exception:
+        return False
+
+
+def docker_tail(n=40):
+    p = run(["docker", "logs", "--tail", str(n), CONTAINER])
+    out = (p.stdout + "\n" + p.stderr).strip()
+    return out[-4000:] if out else None
+
+
+# ------------------------------- locking -------------------------------
+
+def _pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def lock_status(path):
+    """Return (locked: bool, info: dict|None). Removes stale locks."""
+    if not os.path.exists(path):
+        return False, None
+    try:
+        with open(path) as f:
+            info = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        info = {}
+    pid = info.get("pid")
+    if pid == "spawning":
+        if time.time() - os.path.getmtime(path) < SPAWN_GRACE:
+            return True, info
+    elif pid and _pid_alive(pid):
+        return True, info
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return False, info
+
+
+# ------------------------------- helpers -------------------------------
+
+def render_run_cmd(entry):
+    cmd = [
+        "docker", "run", "-d",
+        "--name", CONTAINER,
+        "--restart", "unless-stopped",
+        "--gpus", "all",
+        "--ipc=host",
+        "--network", "host",
+        "--shm-size", str(entry["shm_size"]),
+        "-v", f"{HF_HOME}:/root/.cache/huggingface",
+        entry["image"],
+    ]
+    if entry["entrypoint"] == "serve-prefix":
+        cmd += ["vllm", "serve"]
+    cmd += [entry["hf_id"]]
+    # global constants — not negotiable, this is how agents survive swaps
+    cmd += ["--host", "0.0.0.0", "--port", str(PORT), "--served-model-name", ALIAS]
+    for k, v in entry["vllm_args"].items():
+        if isinstance(v, bool):
+            if v:
+                cmd.append(f"--{k}")
+        else:
+            cmd += [f"--{k}", str(v)]
+    return cmd
+
+
+def spawn_detached(argv, log_path):
+    lf = open(log_path, "ab")
+    p = subprocess.Popen(
+        [sys.executable, os.path.abspath(__file__)] + argv,
+        stdin=subprocess.DEVNULL, stdout=lf, stderr=subprocess.STDOUT,
+        start_new_session=True, close_fds=True,
+    )
+    lf.close()
+    return p.pid
+
+
+def journal_path(kind, jid):
+    return os.path.join(STATE_DIR, f"{kind}-{jid}.json")
+
+
+def journal_write(kind, jid, data):
+    atomic_write_json(journal_path(kind, jid), data)
+
+
+def wait_healthy(entry, allow_download, log):
+    """
+    Poll until healthy. Returns (ok, fail_reason, log_tail).
+    Failure = docker run error (caller), container exit, or timeout:
+      cached weights   -> health_timeout_secs from container start
+      --allow-download -> same timeout but the clock resets whenever download
+                          progress shows in logs; absolute hard cap 6h.
+    """
+    timeout = entry.get("health_timeout_secs", DEFAULT_HEALTH_TIMEOUT)
+    start = time.time()
+    deadline = start + (DOWNLOAD_HARD_CAP if allow_download else timeout)
+    last_progress = start
+    while True:
+        info = container_info()
+        if info is None:
+            return False, "container vanished during startup", docker_tail()
+        if info["status"] != "running":
+            return False, f"container exited during startup (status={info['status']})", docker_tail()
+        if health_ok():
+            log(f"health check PASSED after {int(time.time() - start)}s")
+            return True, None, None
+        now = time.time()
+        if allow_download:
+            tail = docker_tail(40) or ""
+            if PROGRESS_RE.search(tail):
+                if now - last_progress > POLL_INTERVAL * 2:
+                    log("download progress observed — health clock reset")
+                last_progress = now
+            if now - last_progress > timeout:
+                return False, f"no download progress for {timeout}s while fetching weights", tail[-4000:]
+            if now > deadline:
+                return False, f"download hard cap {DOWNLOAD_HARD_CAP}s exceeded", tail[-4000:]
+        elif now > deadline:
+            return False, f"health timeout {timeout}s exceeded", docker_tail()
+        time.sleep(POLL_INTERVAL)
+
+
+def write_current(name, entry, swap_id):
+    atomic_write_json(CURRENT_JSON, {
+        "model": name,
+        "hf_id": entry["hf_id"],
+        "image": entry["image"],
+        "alias": ALIAS,
+        "port": PORT,
+        "container": CONTAINER,
+        "healthy_at": now_iso(),
+        "source": "enigma-foundry",
+        "swap_id": swap_id,
+    })
+
+
+# ------------------------------- swap worker -------------------------------
+
+def cmd_swap(args):
+    locked, info = lock_status(SWAP_LOCK)
+    if locked:
+        raise FoundryError(f"a swap is already in progress: {info}")
+    entry = load_entry(args.name)
+    entries = load_catalog()  # validates the whole catalog
+
+    # --- preflight: fail BEFORE touching the running container ---
+    live_name, _info = detect_live(entries)
+    if live_name == args.name:
+        raise FoundryError(f"'{args.name}' is already the live model — nothing to do")
+    checks = []
+    if not image_present(entry["image"]):
+        raise FoundryError(f"preflight FAILED: image not present locally: {entry['image']}")
+    checks.append(f"image present: {entry['image']}")
+    cached = weights_cached(entry)
+    if cached:
+        checks.append(f"weights cached: {hub_dir(entry['hf_id'])}")
+    else:
+        if not args.allow_download:
+            raise FoundryError(
+                f"preflight FAILED: weights for {entry['hf_id']} are not in the HF cache.\n"
+                f"  Run first:  enigma-foundry download {args.name}\n"
+                f"  Or override: enigma-foundry swap {args.name} --allow-download"
+            )
+        free_gb = shutil.disk_usage(HF_HOME).free / (1024 ** 3)
+        need = float(entry["est_size_gb"])
+        if free_gb < need:
+            raise FoundryError(f"preflight FAILED: {free_gb:.0f}G free < est {need:.0f}G needed")
+        checks.append(f"weights NOT cached; --allow-download given; {free_gb:.0f}G free >= {need:.0f}G est")
+    checks.append(f"live before swap: {live_name or 'none detected'}")
+
+    # --- dispatch detached worker ---
+    swap_id = ts_id()
+    atomic_write_json(PENDING_JSON, {
+        "swap_id": swap_id,
+        "target": args.name,
+        "allow_download": args.allow_download,
+        "requested_at": now_iso(),
+        "live_before": live_name,
+        "preflight": checks,
+    })
+    atomic_write_json(SWAP_LOCK, {"pid": "spawning", "swap_id": swap_id, "target": args.name})
+    log_path = os.path.join(LOGS_DIR, f"swap-{swap_id}.log")
+    pid = spawn_detached(["_swap-worker", swap_id], log_path)
+
+    print(f"swap {swap_id} dispatched -> {args.name} (worker pid {pid})")
+    for c in checks:
+        print(f"  preflight: {c}")
+    print("The model server is going down NOW. If you are an agent served by it, this connection will die.")
+    print(f"After reconnect:  enigma-foundry status   |   enigma-foundry logs {swap_id}")
+
+
+def cmd_swap_worker(swap_id):
+    try:
+        with open(PENDING_JSON) as f:
+            pending = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise FoundryError(f"worker {swap_id}: cannot read pending file: {e}")
+    if pending.get("swap_id") != swap_id:
+        raise FoundryError(f"worker {swap_id}: pending file mismatch ({pending.get('swap_id')})")
+
+    target = pending["target"]
+    allow_download = bool(pending.get("allow_download"))
+    prev_name = pending.get("live_before")
+    atomic_write_json(SWAP_LOCK, {
+        "pid": os.getpid(), "swap_id": swap_id, "target": target, "started_at": now_iso(),
+    })
+
+    journal = {
+        "swap_id": swap_id, "target": target, "allow_download": allow_download,
+        "requested_at": pending.get("requested_at"), "started_at": now_iso(),
+        "live_before": prev_name, "preflight": pending.get("preflight", []),
+        "events": [], "verdict": None, "finished_at": None,
+    }
+
+    def log(msg):
+        print(f"[{now_iso()}] {msg}", flush=True)
+        journal["events"].append([now_iso(), msg])
+        journal_write("swap", swap_id, journal)
+
+    def finish(verdict):
+        journal["verdict"] = verdict
+        journal["finished_at"] = now_iso()
+        journal_write("swap", swap_id, journal)
+        log(f"swap {swap_id} finished: verdict={verdict}")
+
+    log(f"worker started: target={target} allow_download={allow_download} prev={prev_name}")
+    try:
+        entries = load_catalog()
+        entry = entries.get(target)
+        if entry is None:
+            log(f"catalog entry '{target}' vanished before worker could run it")
+            finish("failed")
+            return 1
+
+        log(f"removing container {CONTAINER}")
+        run(["docker", "rm", "-f", CONTAINER])
+
+        cmd = render_run_cmd(entry)
+        log("starting: " + " ".join(cmd))
+        p = run(cmd)
+        if p.returncode != 0:
+            ok, reason, tail = False, f"docker run failed rc={p.returncode}: {p.stderr.strip()}", None
+        else:
+            ok, reason, tail = wait_healthy(entry, allow_download, log)
+
+        if ok:
+            write_current(target, entry, swap_id)
+            finish("success")
+            return 0
+
+        log(f"swap FAILED: {reason}")
+        journal["failure"] = {"reason": reason, "vllm_log_tail": tail}
+
+        # --- auto-rollback ---
+        prev = entries.get(prev_name) if prev_name else None
+        if prev is None:
+            journal["rollback"] = {"target": prev_name, "ok": False,
+                                   "reason": "no previous catalog entry to roll back to"}
+            if os.path.exists(CURRENT_JSON):
+                os.remove(CURRENT_JSON)
+            log("no rollback target — server left DOWN")
+            finish("failed")
+            return 1
+
+        log(f"auto-rollback to {prev_name}")
+        run(["docker", "rm", "-f", CONTAINER])
+        p = run(render_run_cmd(prev))
+        if p.returncode != 0:
+            rb_ok, rb_reason, rb_tail = False, f"docker run failed rc={p.returncode}: {p.stderr.strip()}", None
+        else:
+            rb_ok, rb_reason, rb_tail = wait_healthy(prev, False, log)
+        journal["rollback"] = {"target": prev_name, "ok": rb_ok,
+                               "reason": None if rb_ok else rb_reason, "vllm_log_tail": rb_tail}
+        if rb_ok:
+            write_current(prev_name, prev, swap_id)
+            finish("rolled-back")
+            return 0
+        if os.path.exists(CURRENT_JSON):
+            os.remove(CURRENT_JSON)
+        log("rollback FAILED — server left DOWN")
+        finish("failed")
+        return 1
+    finally:
+        for path in (PENDING_JSON, SWAP_LOCK):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+# ------------------------------- download -------------------------------
+
+def cmd_download(args):
+    entry = load_entry(args.name)
+    if weights_cached(entry):
+        print(f"{args.name}: weights already cached at {hub_dir(entry['hf_id'])}")
+        return 0
+    locked, info = lock_status(DOWNLOAD_LOCK)
+    if locked:
+        raise FoundryError(f"another download is already in progress: {info}")
+    if not image_present(entry["image"]):
+        raise FoundryError(
+            f"image {entry['image']} not present locally — it provides the downloader; docker pull it first")
+    free_gb = shutil.disk_usage(HF_HOME).free / (1024 ** 3)
+    need = float(entry["est_size_gb"])
+    if free_gb < need:
+        raise FoundryError(f"preflight FAILED: {free_gb:.0f}G free < est {need:.0f}G needed")
+
+    dl_id = ts_id()
+    journal_write("download", dl_id, {
+        "download_id": dl_id, "target": args.name, "hf_id": entry["hf_id"],
+        "started_at": now_iso(), "verdict": None, "finished_at": None,
+    })
+    atomic_write_json(DOWNLOAD_LOCK, {"pid": "spawning", "download_id": dl_id, "target": args.name})
+    log_path = os.path.join(LOGS_DIR, f"download-{dl_id}.log")
+    pid = spawn_detached(["_download-worker", dl_id], log_path)
+    print(f"download {dl_id} dispatched for {args.name} ({entry['hf_id']}, ~{entry['est_size_gb']}G, pid {pid})")
+    print(f"Server keeps running. Watch: enigma-foundry logs {dl_id}")
+
+
+def cmd_download_worker(dl_id):
+    try:
+        with open(journal_path("download", dl_id)) as f:
+            journal = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise FoundryError(f"download worker {dl_id}: cannot read journal: {e}")
+    target = journal["target"]
+    entry = load_entry(target)
+    atomic_write_json(DOWNLOAD_LOCK, {
+        "pid": os.getpid(), "download_id": dl_id, "target": target, "started_at": now_iso(),
+    })
+
+    def log(msg):
+        print(f"[{now_iso()}] {msg}", flush=True)
+
+    try:
+        cmd = [
+            "docker", "run", "--rm",
+            "--entrypoint", "python3",
+            "-v", f"{HF_HOME}:/root/.cache/huggingface",
+            entry["image"], "-c",
+            f"from huggingface_hub import snapshot_download; snapshot_download({entry['hf_id']!r})",
+        ]
+        log(f"download worker started for {target}: {' '.join(cmd)}")
+        p = subprocess.run(cmd)  # output streams into our stdout (the log file)
+        log(f"downloader exited rc={p.returncode}")
+        ok = p.returncode == 0 and weights_cached(entry)
+        journal["verdict"] = "success" if ok else "failed"
+        journal["finished_at"] = now_iso()
+        journal_write("download", dl_id, journal)
+        log(f"download {dl_id} verdict={journal['verdict']}")
+        return 0 if ok else 1
+    finally:
+        try:
+            os.remove(DOWNLOAD_LOCK)
+        except OSError:
+            pass
+
+
+# ------------------------------- remove -------------------------------
+
+def cmd_remove(args):
+    entries = load_catalog()
+    if args.name not in entries:
+        raise FoundryError(f"no catalog entry for '{args.name}'")
+    live_name, _info = detect_live(entries)
+    if live_name == args.name:
+        raise FoundryError(f"refusing to remove '{args.name}' — it is the LIVE model")
+    entry = entries[args.name]
+    actions = []
+
+    os.remove(catalog_path(args.name))
+    actions.append(f"deleted catalog entry {catalog_path(args.name)}")
+
+    d = hub_dir(entry["hf_id"])
+    if os.path.isdir(d):
+        shutil.rmtree(d)
+        actions.append(f"purged HF weights {d}")
+    else:
+        actions.append("no cached weights to purge")
+
+    remaining = load_catalog()
+    if any(e["image"] == entry["image"] for e in remaining.values()):
+        actions.append(f"image {entry['image']} kept (shared by another catalog entry)")
+    else:
+        p = run(["docker", "rmi", entry["image"]])
+        actions.append(f"removed image {entry['image']}" if p.returncode == 0
+                       else f"image removal failed: {p.stderr.strip()}")
+
+    # stale current.json pointing at the removed model (server already down) -> clear
+    if os.path.exists(CURRENT_JSON):
+        try:
+            cur = json.load(open(CURRENT_JSON))
+            if cur.get("model") == args.name:
+                os.remove(CURRENT_JSON)
+                actions.append("cleared stale current.json")
+        except json.JSONDecodeError:
+            pass
+
+    journal_write("remove", ts_id(), {"model": args.name, "at": now_iso(), "actions": actions})
+    print(f"removed {args.name}:")
+    for a in actions:
+        print(f"  - {a}")
+    return 0
+
+
+# ------------------------------- read-only -------------------------------
+
+def cmd_list(args):
+    entries = load_catalog()
+    if not entries:
+        print("catalog is empty — add YAML files to", CATALOG_DIR)
+        return 0
+    imgs = images_present()
+    live_name, _info = detect_live(entries)
+    print(f"{'NAME':24} {'CACHED':7} {'IMAGE':7} {'~GB':>5}  IMAGE / LIVE")
+    for name, e in entries.items():
+        live = "  <== LIVE" if name == live_name else ""
+        print(f"{name:24} "
+              f"{'yes' if weights_cached(e) else 'no':7} "
+              f"{'yes' if e['image'] in imgs else 'no':7} "
+              f"{str(e['est_size_gb']):>5}  {e['image']}{live}")
+    return 0
+
+
+def cmd_status(args):
+    entries = load_catalog()
+    info = container_info()
+    live_name, _ = detect_live(entries)
+    healthy = health_ok() if info and info["status"] == "running" else False
+
+    print(f"endpoint:     http://localhost:{PORT}  alias={ALIAS}  container={CONTAINER}")
+    if healthy:
+        print("server:       HEALTHY")
+    elif info:
+        print(f"server:       UNHEALTHY (container {info['status']})")
+    else:
+        print("server:       DOWN (no container)")
+    if info:
+        print(f"container:    status={info['status']} image={info['image']}")
+        print(f"              started_at={info['started_at']}")
+    if live_name:
+        print(f"live model:   {live_name}")
+    elif info and info["status"] == "running":
+        print("live model:   unknown (running container matches no catalog entry)")
+    else:
+        print("live model:   none")
+
+    if os.path.exists(CURRENT_JSON):
+        try:
+            cur = json.load(open(CURRENT_JSON))
+            print(f"current.json: model={cur.get('model')} healthy_at={cur.get('healthy_at')} "
+                  f"swap={cur.get('swap_id')}")
+        except json.JSONDecodeError:
+            print("current.json: unreadable")
+    else:
+        print("current.json: absent (no foundry-managed healthy model recorded yet)")
+
+    locked, linfo = lock_status(SWAP_LOCK)
+    if locked:
+        print(f"swap:         IN PROGRESS {linfo}")
+    elif os.path.exists(PENDING_JSON):
+        print("swap:         pending file present but worker dead — inspect state/swap-pending.json")
+    else:
+        print("swap:         none in progress")
+
+    dlocked, dinfo = lock_status(DOWNLOAD_LOCK)
+    print(f"download:     {'IN PROGRESS ' + json.dumps(dinfo) if dlocked else 'none in progress'}")
+
+    swaps = sorted(glob.glob(journal_path("swap", "*")), key=os.path.getmtime)
+    if swaps:
+        try:
+            last = json.load(open(swaps[-1]))
+            print(f"last swap:    {last.get('swap_id')} target={last.get('target')} "
+                  f"verdict={last.get('verdict') or 'incomplete'} finished={last.get('finished_at')}")
+        except json.JSONDecodeError:
+            pass
+    return 0
+
+
+def cmd_logs(args):
+    if args.container:
+        p = run(["docker", "logs", "--tail", str(args.tail), CONTAINER])
+        sys.stdout.write(p.stdout)
+        sys.stderr.write(p.stderr)
+        return 0 if p.returncode == 0 else 1
+    if args.log_id:
+        candidates = [
+            os.path.join(LOGS_DIR, f"{args.log_id}.log"),
+            os.path.join(LOGS_DIR, f"swap-{args.log_id}.log"),
+            os.path.join(LOGS_DIR, f"download-{args.log_id}.log"),
+        ]
+        for c in candidates:
+            if os.path.exists(c):
+                print(f"===== {c} =====")
+                with open(c) as f:
+                    print(f.read()[-12000:])
+                return 0
+        raise FoundryError(f"no log found for '{args.log_id}'")
+    logs = sorted(glob.glob(os.path.join(LOGS_DIR, "*.log")), key=os.path.getmtime)
+    if not logs:
+        print("no logs yet in", LOGS_DIR)
+        return 0
+    latest = logs[-1]
+    print(f"===== {latest} (most recent of {len(logs)}) =====")
+    with open(latest) as f:
+        print(f.read()[-12000:])
+    return 0
+
+
+# ------------------------------- main -------------------------------
+
+def main():
+    os.makedirs(STATE_DIR, exist_ok=True)
+    os.makedirs(LOGS_DIR, exist_ok=True)
+
+    ap = argparse.ArgumentParser(prog="enigma-foundry", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("list", help="list catalog entries with cached/image/live markers")
+    p.set_defaults(func=cmd_list)
+
+    p = sub.add_parser("status", help="live server state, swap progress, last verdict (read-only)")
+    p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("swap", help="swap the live model (detached worker, auto-rollback)")
+    p.add_argument("name", help="catalog entry name")
+    p.add_argument("--allow-download", action="store_true",
+                   help="permit fetching uncached weights during the swap (long!)")
+    p.set_defaults(func=cmd_swap)
+
+    p = sub.add_parser("download", help="pre-download weights for a catalog entry (server keeps running)")
+    p.add_argument("name", help="catalog entry name")
+    p.set_defaults(func=cmd_download)
+
+    p = sub.add_parser("remove", help="full removal: catalog YAML + HF weights + docker image (refuses if live)")
+    p.add_argument("name", help="catalog entry name")
+    p.set_defaults(func=cmd_remove)
+
+    p = sub.add_parser("logs", help="show worker logs (default: most recent)")
+    p.add_argument("log_id", nargs="?", help="swap/download id (e.g. 20260828-113045 or swap-20260828-113045)")
+    p.add_argument("--container", action="store_true", help="docker logs of vllm-server instead")
+    p.add_argument("--tail", type=int, default=100, help="lines for --container (default 100)")
+    p.set_defaults(func=cmd_logs)
+
+    p = sub.add_parser("_swap-worker", help=argparse.SUPPRESS)
+    p.add_argument("swap_id")
+    p.set_defaults(func=lambda a: cmd_swap_worker(a.swap_id))
+
+    p = sub.add_parser("_download-worker", help=argparse.SUPPRESS)
+    p.add_argument("download_id")
+    p.set_defaults(func=lambda a: cmd_download_worker(a.download_id))
+
+    args = ap.parse_args()
+    try:
+        rc = args.func(args)
+        return rc if isinstance(rc, int) else 0
+    except FoundryError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

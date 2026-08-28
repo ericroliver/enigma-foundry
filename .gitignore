@@ -1,0 +1,5 @@
+state/*
+!state/.gitkeep
+logs/*
+!logs/.gitkeep
+__pycache__/
