@@ -1,0 +1,21 @@
+name: qwen3-8-27b-mtp
+hf_id: Qwen/Qwen3.8-27B
+image: nvcr.io/nvidia/vllm:26.06-py3
+entrypoint: serve-prefix
+shm_size: 32g
+est_size_gb: 56           # same checkpoint as qwen3-8-27b — already cached
+health_timeout_secs: 900
+# Probe (2026-08-28): qwen3-8-27b + built-in MTP speculative head + qwen3
+# reasoning parser. Purpose: test whether nvcr 26.06 (vLLM ~0.22.1, predates
+# Qwen3.8) supports MTP on the shared qwen3_5 arch. If the container dies at
+# startup -> auto-rollback -> image bump needed. Expect ~9-10 TPS if it works.
+# --language-model-only deliberately omitted: image input capability retained.
+vllm_args:
+  max-model-len: 65536
+  gpu-memory-utilization: 0.90
+  enable-prefix-caching: true
+  enable-auto-tool-choice: true
+  tool-call-parser: qwen3_coder
+  reasoning-parser: qwen3
+  max-num-seqs: 4
+  speculative-config: '{"method":"mtp","num_speculative_tokens":3}'

@@ -34,8 +34,11 @@ CONTAINER = "vllm-server"
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CATALOG_DIR = os.path.join(ROOT, "catalog")
-STATE_DIR = os.path.join(ROOT, "state")
-LOGS_DIR = os.path.join(ROOT, "logs")
+# Runtime state/logs live OUTSIDE the deploy tree so `rsync -a --delete` (code-only
+# deploy) can never wipe current.json or swap journals on the live host.
+STATE_ROOT = os.environ.get("FOUNDRY_STATE_DIR") or os.path.expanduser("~/enigma-foundry-state")
+STATE_DIR = os.path.join(STATE_ROOT, "state")
+LOGS_DIR = os.path.join(STATE_ROOT, "logs")
 
 CURRENT_JSON = os.path.join(STATE_DIR, "current.json")
 PENDING_JSON = os.path.join(STATE_DIR, "swap-pending.json")
@@ -179,6 +182,16 @@ def _as_list(v):
     return list(v)
 
 
+def read_current():
+    """The foundry-managed healthy-model record from state/current.json, or None."""
+    if not os.path.exists(CURRENT_JSON):
+        return None
+    try:
+        return json.load(open(CURRENT_JSON))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 def container_info():
     """dict(status, image, cmdline, started_at) or None if container absent."""
     p = run(["docker", "inspect", CONTAINER])
@@ -199,15 +212,49 @@ def container_info():
 
 
 def detect_live(entries=None):
-    """Match the running container to a catalog entry. Returns (name|None, info|None)."""
+    """Match the running container to a catalog entry. Returns (name|None, info|None).
+
+    Resolution order:
+      1. state/current.json — the foundry-managed healthy model — is
+         authoritative when the container is running and healthy. This is the
+         only unambiguous record when variants share image + hf_id.
+      2. Fingerprint fallback (no usable record): exact-match the container
+         argv against each candidate's rendered argv (image + hf_id must also
+         match). Substring matching is unsafe — variants share hf_id.
+    """
     info = container_info()
     if info is None or info["status"] != "running":
         return None, info
     entries = entries if entries is not None else load_catalog()
+
+    cur = read_current()
+    if cur and cur.get("model") in entries and health_ok():
+        return cur["model"], info
+
+    live_argv = info["cmdline"].split()  # no quoting in our rendered args, so split() is exact
     for name, e in entries.items():
-        if e["image"] == info["image"] and e["hf_id"] in info["cmdline"]:
+        if e["image"] != info["image"] or e["hf_id"] not in live_argv:
+            continue
+        if rendered_argv(e) == live_argv:
             return name, info
     return None, info
+
+
+def rendered_argv(entry):
+    """The exact argv the container would run for this entry (everything after
+    `docker run ... <image>`)."""
+    cmd = []
+    if entry["entrypoint"] == "serve-prefix":
+        cmd += ["vllm", "serve"]
+    cmd += [entry["hf_id"]]
+    cmd += ["--host", "0.0.0.0", "--port", str(PORT), "--served-model-name", ALIAS]
+    for k, v in entry["vllm_args"].items():
+        if isinstance(v, bool):
+            if v:
+                cmd.append(f"--{k}")
+        else:
+            cmd += [f"--{k}", str(v)]
+    return cmd
 
 
 def health_ok():
@@ -273,17 +320,9 @@ def render_run_cmd(entry):
         "-v", f"{HF_HOME}:/root/.cache/huggingface",
         entry["image"],
     ]
-    if entry["entrypoint"] == "serve-prefix":
-        cmd += ["vllm", "serve"]
-    cmd += [entry["hf_id"]]
-    # global constants — not negotiable, this is how agents survive swaps
-    cmd += ["--host", "0.0.0.0", "--port", str(PORT), "--served-model-name", ALIAS]
-    for k, v in entry["vllm_args"].items():
-        if isinstance(v, bool):
-            if v:
-                cmd.append(f"--{k}")
-        else:
-            cmd += [f"--{k}", str(v)]
+    # global constants (--host/--port/--served-model-name) live in rendered_argv —
+    # not negotiable, this is how agents survive swaps
+    cmd += rendered_argv(entry)
     return cmd
 
 

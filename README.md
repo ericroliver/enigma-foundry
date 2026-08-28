@@ -71,7 +71,9 @@ the image → `download <name>` → `swap <name>`.
 ## Ops
 
 Canonical git repo (local only): `/home/eo/enigma-dev/repos/enigma-foundry`
-on the cerebrus host. Deploy: `rsync -a --delete --exclude .git --exclude __pycache__ repos/enigma-foundry/ spark:~/enigma-foundry/`
+on the cerebrus host. Deploy (code-only; state/logs live in `~/enigma-foundry-state` on
+spark, outside the synced tree): `rsync -a --delete --exclude .git --exclude __pycache__
+--exclude state/ --exclude logs/ repos/enigma-foundry/ spark:~/enigma-foundry/`
 
 Legacy `~/run-vllm-*.sh` scripts on spark remain as manual fallback until
 the operator removes them.
