@@ -5,8 +5,8 @@ entrypoint: serve-prefix
 shm_size: 32g
 est_size_gb: 56           # actual HF blob sum: 51.8 GiB (2026-08-28)
 health_timeout_secs: 900
-# NOTE: vllm_args are provisional (modeled on qwen3-coder-next-fp8).
-# Tune before first swap; tool-call-parser for qwen3_5 arch unverified.
+# vllm_args: operator-approved (2026-08-28) starting point = qwen3-coder-next-fp8
+# profile. Tune after first live swap if the qwen3_5 arch objects.
 vllm_args:
   max-model-len: 65536
   gpu-memory-utilization: 0.90
