@@ -1,0 +1,24 @@
+name: qwen3-8-27b-fp8
+hf_id: Qwen/Qwen3.8-27B-FP8
+image: nvcr.io/nvidia/vllm:26.06-py3
+entrypoint: serve-prefix
+shm_size: 32g
+est_size_gb: 30           # HF blob sum confirmed 28.8 GiB (2026-08-28)
+health_timeout_secs: 900
+# Research-recommended recipe (operator-approved download 2026-08-28). FP8
+# checkpoint (vLLM reads quant from checkpoint; no --dtype/--quantization needed),
+# built-in MTP head, qwen3 reasoning parser. gpu-mem 0.80 deliberate (halved
+# weights -> KV headroom). max-num-batched-tokens 8192 added: vLLM warned the
+# MTP build's 2048 under-allocates draft-token slots. --language-model-only
+# deliberately omitted: image input retained. Target ~16-17 TPS.
+vllm_args:
+  max-model-len: 65536
+  gpu-memory-utilization: 0.80
+  kv-cache-dtype: fp8
+  max-num-seqs: 4
+  max-num-batched-tokens: 8192
+  enable-prefix-caching: true
+  enable-auto-tool-choice: true
+  tool-call-parser: qwen3_coder
+  reasoning-parser: qwen3
+  speculative-config: '{"method":"mtp","num_speculative_tokens":3}'
