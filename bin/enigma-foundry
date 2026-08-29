@@ -260,12 +260,26 @@ def weights_cached(entry):
 
 
 def image_present(image):
-    return run(["docker", "image", "inspect", image]).returncode == 0
+    """True if the image ref is available locally. Handles digest-pinned refs
+    (repo@sha256:...) which `docker image inspect` can miss depending on how
+    the image was pulled."""
+    if run(["docker", "image", "inspect", image]).returncode == 0:
+        return True
+    if "@sha256:" in image:
+        return image in images_present()
+    return False
 
 
 def images_present():
-    p = run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"])
-    return set(p.stdout.split()) if p.returncode == 0 else set()
+    """All local image refs in both tag and digest forms."""
+    p = run(["docker", "images", "--digests", "--no-trunc",
+             "--format", "{{.Repository}}:{{.Tag}} {{.Repository}}@{{.Digest}}"])
+    if p.returncode != 0:
+        return set()
+    refs = set()
+    for line in p.stdout.split():
+        refs.update(line.split())
+    return {r for r in refs if "<none>" not in r}
 
 
 # ---------------------------- live server state ----------------------------
