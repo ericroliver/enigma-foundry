@@ -15,7 +15,7 @@ health_timeout_secs: 900
 # KV pool ~1.43M tokens, max-concurrency@64K was 21.8x -> 128K uses ~9% of pool.
 # Agent kept hitting 'length' finish at 64K mid-task; bumped to reduce truncation.
 vllm_args:
-  max-model-len: 131072
+  max-model-len: 262144   # native max; bumped 131072->262144 2026-08-29 (operator)
   gpu-memory-utilization: 0.80
   kv-cache-dtype: fp8
   max-num-seqs: 4
