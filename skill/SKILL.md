@@ -1,12 +1,12 @@
 ---
 name: enigma-foundry
-description: List, swap, download, and remove vLLM models on a host via enigma-foundry. Handles pre-download, preflight validation, detached swap with auto-rollback, and post-swap verification.
+description: List, swap, download, and remove models on a host via enigma-foundry (vLLM and SGLang engines). Handles pre-download, preflight validation, detached swap with auto-rollback, and post-swap verification.
 ---
 
 # enigma-foundry — model server manager
 
-**enigma-foundry** manages a dockerized vLLM server on a host (one model at a
-time). Run the CLI directly on the target host, or over SSH:
+**enigma-foundry** manages a dockerized model server (vLLM or SGLang) on a
+host (one model at a time). Run the CLI directly on the target host, or over SSH:
 
 ```bash
 ~/enigma-foundry/bin/enigma-foundry <subcommand>          # local
