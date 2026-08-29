@@ -186,6 +186,11 @@ def validate_entry(name, data):
         data["health_timeout_secs"] = int(data.get("health_timeout_secs", DEFAULT_HEALTH_TIMEOUT))
     except (TypeError, ValueError):
         raise FoundryError(f"catalog entry '{name}': health_timeout_secs must be an int")
+    aux = data.get("aux_models")
+    if aux is not None:
+        if not isinstance(aux, list) or not all(isinstance(m, str) and "/" in m for m in aux):
+            raise FoundryError(
+                f"catalog entry '{name}': aux_models must be a list of HF repo ids (Org/Name)")
     probe = data.get("probe")
     if probe is not None:
         if not isinstance(probe, dict):
@@ -230,14 +235,28 @@ def hub_dir(hf_id):
     return os.path.join(HF_HUB, "models--" + hf_id.replace("/", "--"))
 
 
-def weights_cached(entry):
-    d = hub_dir(entry["hf_id"])
+def aux_models(entry):
+    """Additional HF repos the entry needs (e.g. speculative draft models)."""
+    return list(entry.get("aux_models") or [])
+
+
+def all_hf_ids(entry):
+    return [entry["hf_id"]] + aux_models(entry)
+
+
+def _hf_cached(hf_id):
+    d = hub_dir(hf_id)
     if not os.path.isdir(d):
         return False
     for _root, _dirs, files in os.walk(d):
         if files:
             return True
     return False
+
+
+def weights_cached(entry):
+    """Primary weights AND all aux models must be in the HF cache."""
+    return all(_hf_cached(hf_id) for hf_id in all_hf_ids(entry))
 
 
 def image_present(image):
@@ -584,13 +603,13 @@ def cmd_swap(args):
     if not image_present(entry["image"]):
         raise FoundryError(f"preflight FAILED: image not present locally: {entry['image']}")
     checks.append(f"image present: {entry['image']}")
-    cached = weights_cached(entry)
-    if cached:
-        checks.append(f"weights cached: {hub_dir(entry['hf_id'])}")
+    missing = [h for h in all_hf_ids(entry) if not _hf_cached(h)]
+    if not missing:
+        checks.append(f"weights cached: {', '.join(all_hf_ids(entry))}")
     else:
         if not args.allow_download:
             raise FoundryError(
-                f"preflight FAILED: weights for {entry['hf_id']} are not in the HF cache.\n"
+                f"preflight FAILED: weights not in the HF cache: {', '.join(missing)}.\n"
                 f"  Run first:  enigma-foundry download {args.name}\n"
                 f"  Or override: enigma-foundry swap {args.name} --allow-download"
             )
@@ -742,6 +761,7 @@ def cmd_download(args):
     dl_id = ts_id()
     journal_write("download", dl_id, {
         "download_id": dl_id, "target": args.name, "hf_id": entry["hf_id"],
+        "models": {hf_id: "pending" for hf_id in all_hf_ids(entry)},
         "started_at": now_iso(), "verdict": None, "finished_at": None,
     })
     atomic_write_json(DOWNLOAD_LOCK, {"pid": "spawning", "download_id": dl_id, "target": args.name})
@@ -767,17 +787,31 @@ def cmd_download_worker(dl_id):
         print(f"[{now_iso()}] {msg}", flush=True)
 
     try:
-        cmd = [
-            "docker", "run", "--rm",
-            "--entrypoint", "python3",
-            "-v", f"{HF_HOME}:/root/.cache/huggingface",
-            entry["image"], "-c",
-            f"from huggingface_hub import snapshot_download; snapshot_download({entry['hf_id']!r})",
-        ]
-        log(f"download worker started for {target}: {' '.join(cmd)}")
-        p = subprocess.run(cmd)  # output streams into our stdout (the log file)
-        log(f"downloader exited rc={p.returncode}")
-        ok = p.returncode == 0 and weights_cached(entry)
+        ok = True
+        for hf_id in all_hf_ids(entry):
+            if _hf_cached(hf_id):
+                log(f"already cached: {hf_id}")
+                journal["models"][hf_id] = "success"
+                journal_write("download", dl_id, journal)
+                continue
+            cmd = [
+                "docker", "run", "--rm",
+                "--entrypoint", "python3",
+                "-v", f"{HF_HOME}:/root/.cache/huggingface",
+                entry["image"], "-c",
+                f"from huggingface_hub import snapshot_download; snapshot_download({hf_id!r})",
+            ]
+            log(f"download worker started for {target}: {' '.join(cmd)}")
+            p = subprocess.run(cmd)  # output streams into our stdout (the log file)
+            log(f"downloader exited rc={p.returncode} ({hf_id})")
+            model_ok = p.returncode == 0 and _hf_cached(hf_id)
+            journal["models"][hf_id] = "success" if model_ok else "failed"
+            journal_write("download", dl_id, journal)
+            if not model_ok:
+                ok = False
+                log(f"aborting remaining downloads — {hf_id} failed")
+                break
+        ok = ok and weights_cached(entry)
         journal["verdict"] = "success" if ok else "failed"
         journal["finished_at"] = now_iso()
         journal_write("download", dl_id, journal)
