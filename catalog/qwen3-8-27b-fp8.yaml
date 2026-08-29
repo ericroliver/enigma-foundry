@@ -11,8 +11,11 @@ health_timeout_secs: 900
 # weights -> KV headroom). max-num-batched-tokens 8192 added: vLLM warned the
 # MTP build's 2048 under-allocates draft-token slots. --language-model-only
 # deliberately omitted: image input retained. Target ~16-17 TPS.
+# 2026-08-29: max-model-len 65536 -> 131072 (128K). Native model context is 256K;
+# KV pool ~1.43M tokens, max-concurrency@64K was 21.8x -> 128K uses ~9% of pool.
+# Agent kept hitting 'length' finish at 64K mid-task; bumped to reduce truncation.
 vllm_args:
-  max-model-len: 65536
+  max-model-len: 131072
   gpu-memory-utilization: 0.80
   kv-cache-dtype: fp8
   max-num-seqs: 4
