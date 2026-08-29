@@ -1,5 +1,6 @@
 name: qwen3-8-27b-fp8
 hf_id: Qwen/Qwen3.8-27B-FP8
+engine: vllm
 image: nvcr.io/nvidia/vllm:26.06-py3
 entrypoint: serve-prefix
 shm_size: 32g
@@ -14,7 +15,7 @@ health_timeout_secs: 900
 # 2026-08-29: max-model-len 65536 -> 131072 (128K). Native model context is 256K;
 # KV pool ~1.43M tokens, max-concurrency@64K was 21.8x -> 128K uses ~9% of pool.
 # Agent kept hitting 'length' finish at 64K mid-task; bumped to reduce truncation.
-vllm_args:
+engine_args:
   max-model-len: 262144   # native max; bumped 131072->262144 2026-08-29 (operator)
   gpu-memory-utilization: 0.80
   kv-cache-dtype: fp8

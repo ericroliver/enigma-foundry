@@ -1,12 +1,13 @@
 # Muse Glimmer 30B
 name: muse-glimmer-30b
 hf_id: meta-models/Muse-Glimmer-30B
+engine: vllm
 image: vllm/vllm-openai:muse-glimmer
 entrypoint: bare                # vllm-openai image entrypoint IS the api server; pass model id directly
 shm_size: 16g
 est_size_gb: 56                 # measured: 56G in HF cache 2026-08-28
 health_timeout_secs: 900
-vllm_args:
+engine_args:
   max-model-len: 65536
   kv-cache-memory: 63571814912
   enable-prefix-caching: true

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-enigma-foundry — vLLM model server manager for the spark host.
+enigma-foundry — model server manager (vLLM and SGLang engines).
 
-Manages a catalog of vLLM-served models behind one stable endpoint:
+Manages a catalog of models behind one stable endpoint:
 container `vllm-server`, port 8000, served alias `enigma/default`.
 
 Subcommands: list | status | swap | download | remove | logs
@@ -54,7 +54,6 @@ DOWNLOAD_HARD_CAP = 6 * 3600   # s, absolute cap when downloading weights
 POLL_INTERVAL = 10             # s
 SPAWN_GRACE = 30               # s a "spawning" lock is considered alive
 
-FORBIDDEN_VLLM_ARGS = {"host", "port", "served-model-name", "served_model_name"}
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 PROGRESS_RE = re.compile(
     r"\d+(\.\d+)?%|it/s|[KMGT]i?B/s|Downloading|Fetching|snapshot_download", re.I
@@ -88,6 +87,50 @@ def atomic_write_json(path, data):
     os.replace(tmp, path)
 
 
+# ------------------------------- engines -------------------------------
+
+_ENGINES = None
+
+
+def engines():
+    """Engine records from engines.yaml (launcher, model placement, health paths)."""
+    global _ENGINES
+    if _ENGINES is None:
+        path = os.path.join(ROOT, "engines.yaml")
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f)
+        except (OSError, yaml.YAMLError) as e:
+            raise FoundryError(f"cannot load engines.yaml: {e}")
+        if not isinstance(data, dict) or not data:
+            raise FoundryError("engines.yaml: not a non-empty mapping")
+        for eng_name, rec in data.items():
+            if not isinstance(rec, dict):
+                raise FoundryError(f"engines.yaml: engine '{eng_name}': not a mapping")
+            for field in ("launcher", "model_argument", "readiness_path", "contract_path", "reserved_args"):
+                if field not in rec:
+                    raise FoundryError(f"engines.yaml: engine '{eng_name}': missing '{field}'")
+            if not isinstance(rec["launcher"], list) or not all(isinstance(x, str) for x in rec["launcher"]):
+                raise FoundryError(f"engines.yaml: engine '{eng_name}': launcher must be a list of strings")
+            if not (rec["model_argument"] == "positional" or str(rec["model_argument"]).startswith("--")):
+                raise FoundryError(
+                    f"engines.yaml: engine '{eng_name}': model_argument must be 'positional' or a --flag")
+            if not isinstance(rec["reserved_args"], list):
+                raise FoundryError(f"engines.yaml: engine '{eng_name}': reserved_args must be a list")
+        _ENGINES = data
+    return _ENGINES
+
+
+def entry_engine(entry):
+    """The engine record for a catalog entry (default vllm for legacy entries)."""
+    name = entry.get("engine", "vllm")
+    eng = engines().get(name)
+    if eng is None:
+        raise FoundryError(f"catalog entry '{entry.get('name', '?')}': unknown engine '{name}' "
+                           f"(defined: {sorted(engines())})")
+    return eng
+
+
 # ------------------------------- catalog -------------------------------
 
 def catalog_path(name):
@@ -99,20 +142,41 @@ def validate_entry(name, data):
         raise FoundryError(f"catalog entry '{name}': not a mapping")
     if data.get("name") != name:
         raise FoundryError(f"catalog entry '{name}': 'name' field must match filename")
-    for field in ("hf_id", "image", "entrypoint", "shm_size", "vllm_args", "est_size_gb"):
+    if "engine_args" in data and "vllm_args" in data:
+        raise FoundryError(f"catalog entry '{name}': set engine_args or vllm_args, not both")
+    if "vllm_args" in data:
+        print(f"warning: catalog entry '{name}': 'vllm_args' is deprecated, rename to 'engine_args'",
+              file=sys.stderr)
+        data["engine_args"] = data.pop("vllm_args")
+    for field in ("hf_id", "image", "entrypoint", "shm_size", "engine_args", "est_size_gb"):
         if field not in data:
             raise FoundryError(f"catalog entry '{name}': missing required field '{field}'")
+    data.setdefault("engine", "vllm")
+    eng = entry_engine(data)  # validates the engine name against engines.yaml
     if data["entrypoint"] not in ("serve-prefix", "bare"):
         raise FoundryError(f"catalog entry '{name}': entrypoint must be serve-prefix|bare")
+    if data["engine"] != "vllm" and data["entrypoint"] == "bare":
+        raise FoundryError(
+            f"catalog entry '{name}': engine '{data['engine']}' requires entrypoint: serve-prefix "
+            "(its launcher must be explicit in the container argv)")
     if not re.match(r"^\d+[gmk]$", str(data["shm_size"])):
         raise FoundryError(f"catalog entry '{name}': shm_size must look like 16g/32g")
-    if not isinstance(data["vllm_args"], dict):
-        raise FoundryError(f"catalog entry '{name}': vllm_args must be a mapping")
-    bad = FORBIDDEN_VLLM_ARGS & {str(k) for k in data["vllm_args"]}
+    args = data["engine_args"]
+    reserved = {str(a) for a in eng["reserved_args"]}
+    if isinstance(args, dict):
+        bad = {f"--{str(k).replace('_', '-')}" for k in args} & reserved
+    elif isinstance(args, list):
+        for item in args:
+            if not isinstance(item, (str, int, float)) or isinstance(item, bool):
+                raise FoundryError(
+                    f"catalog entry '{name}': engine_args list items must be scalars, got {item!r}")
+        bad = {str(i) for i in args} & reserved
+    else:
+        raise FoundryError(f"catalog entry '{name}': engine_args must be a mapping or an ordered list")
     if bad:
         raise FoundryError(
-            f"catalog entry '{name}': vllm_args must not set {sorted(bad)} — "
-            "host/port/served-model-name are global constants"
+            f"catalog entry '{name}': engine_args must not set {sorted(bad)} — "
+            "host/port/served-model-name and model placement are global constants"
         )
     try:
         float(data["est_size_gb"])
@@ -240,20 +304,36 @@ def detect_live(entries=None):
     return None, info
 
 
+def engine_args_argv(entry):
+    """engine_args rendered to argv: mapping -> `--key value` (bare flag for
+    true booleans); ordered list -> verbatim scalars."""
+    args = entry["engine_args"]
+    if isinstance(args, dict):
+        cmd = []
+        for k, v in args.items():
+            if isinstance(v, bool):
+                if v:
+                    cmd.append(f"--{k}")
+            else:
+                cmd += [f"--{k}", str(v)]
+        return cmd
+    return [str(x) for x in args]
+
+
 def rendered_argv(entry):
     """The exact argv the container would run for this entry (everything after
-    `docker run ... <image>`)."""
+    `docker run ... <image>`). Engine record owns launcher + model placement."""
+    eng = entry_engine(entry)
     cmd = []
     if entry["entrypoint"] == "serve-prefix":
-        cmd += ["vllm", "serve"]
-    cmd += [entry["hf_id"]]
+        cmd += list(eng["launcher"])
+    if eng["model_argument"] == "positional":
+        cmd.append(entry["hf_id"])
+    else:
+        cmd += [eng["model_argument"], entry["hf_id"]]
+    # global constants — not negotiable, this is how agents survive swaps
     cmd += ["--host", "0.0.0.0", "--port", str(PORT), "--served-model-name", ALIAS]
-    for k, v in entry["vllm_args"].items():
-        if isinstance(v, bool):
-            if v:
-                cmd.append(f"--{k}")
-        else:
-            cmd += [f"--{k}", str(v)]
+    cmd += engine_args_argv(entry)
     return cmd
 
 

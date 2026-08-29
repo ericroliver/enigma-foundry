@@ -1,12 +1,13 @@
 # Qwen3 Coder Next FP8 — primary coding model
 name: qwen3-coder-next-fp8
 hf_id: Qwen/Qwen3-Coder-Next-FP8
+engine: vllm
 image: nvcr.io/nvidia/vllm:26.06-py3
 entrypoint: serve-prefix        # nvcr image needs `vllm serve` before the model id
 shm_size: 32g
 est_size_gb: 81                 # measured: 81G in HF cache 2026-08-28
 health_timeout_secs: 900
-vllm_args:
+engine_args:
   max-model-len: 65536
   gpu-memory-utilization: 0.90
   enable-prefix-caching: true
