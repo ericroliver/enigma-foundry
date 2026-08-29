@@ -407,8 +407,10 @@ def cmd_swap(args):
 
     # --- preflight: fail BEFORE touching the running container ---
     live_name, _info = detect_live(entries)
-    if live_name == args.name:
-        raise FoundryError(f"'{args.name}' is already the live model — nothing to do")
+    if live_name == args.name and not args.force:
+        raise FoundryError(
+            f"'{args.name}' is already the live model — nothing to do "
+            "(use --force to re-swap the live model, e.g. after a config-only edit)")
     checks = []
     if not image_present(entry["image"]):
         raise FoundryError(f"preflight FAILED: image not present locally: {entry['image']}")
@@ -790,6 +792,8 @@ def main():
     p.add_argument("name", help="catalog entry name")
     p.add_argument("--allow-download", action="store_true",
                    help="permit fetching uncached weights during the swap (long!)")
+    p.add_argument("--force", action="store_true",
+                   help="re-swap the live model (for config-only edits)")
     p.set_defaults(func=cmd_swap)
 
     p = sub.add_parser("download", help="pre-download weights for a catalog entry (server keeps running)")
