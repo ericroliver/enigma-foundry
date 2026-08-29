@@ -1,10 +1,10 @@
 # enigma-foundry
 
-Manage a fleet of dockerized **vLLM** model servers behind one stable
-endpoint. One live model at a time, a validated YAML catalog of candidate
-models, detached swap workers with **auto-rollback**, and a state journal —
-built so that LLM-serving agents can survive (or even perform) their own
-model swaps.
+Manage a fleet of dockerized **vLLM** or **SGLang** model servers behind
+one stable endpoint. One live model at a time, a validated YAML catalog of
+candidate models, detached swap workers with **auto-rollback**, and a state
+journal — built so that LLM-serving agents can survive (or even perform)
+their own model swaps.
 
 The agent-survival contract: every catalog entry is served as container
 `vllm-server` on port **8000** with served alias **`enigma/default`**.
@@ -53,9 +53,13 @@ alone:
 
 1. `docker rm -f vllm-server`
 2. `docker run` rendered from the catalog YAML + global constants
-3. health-poll `GET /v1/models` for HTTP 200 + the served alias
-   (per-model `health_timeout_secs`, default 900s; with `--allow-download`
-   the clock resets on download progress, hard cap 6h)
+3. three-stage health gate (per-model `health_timeout_secs`, default 900s;
+   with `--allow-download` the clock resets on download progress, hard cap 6h):
+   1. **readiness** — `GET <engine readiness_path>` (`/health`) → HTTP 200
+   2. **contract** — `GET /v1/models` lists the served alias
+   3. **generation probe** — one deterministic chat completion must return
+      non-empty content (template/parser breakage surfaces here, not on the
+      first agent request)
 4. success → `state/current.json` + journal verdict `success`
 5. failure → **auto-rollback** to the previous catalog entry, verdict
    `rolled-back` | `failed` — the server is never left dead if a rollback
@@ -67,21 +71,42 @@ Journals: `state/swap-<id>.json` (events, verdict, log tail on failure).
 
 ```yaml
 name: my-model              # must match filename catalog/my-model.yaml
+engine: vllm                # engine record from engines.yaml (vllm | sglang);
+                            # owns launcher, model placement, health paths
 hf_id: Org/Model-Name       # HF repo id
-image: nvcr.io/nvidia/vllm:26.06-py3
-entrypoint: serve-prefix    # serve-prefix = prepend `vllm serve`
-                            # bare = image's own entrypoint is the server
+image: nvcr.io/nvidia/vllm:26.06-py3   # digest pins (repo@sha256:...) supported
+entrypoint: serve-prefix    # serve-prefix = prepend the engine launcher
+                            # bare = image's own entrypoint is the server (vllm only)
 shm_size: 32g
-est_size_gb: 81             # for download disk-space preflight
+est_size_gb: 81             # for download disk-space preflight (cover primary+aux)
 health_timeout_secs: 900
-vllm_args:                  # rendered verbatim as --key value; true = bare flag
+aux_models:                 # optional: extra HF repos downloaded alongside
+  - Org/Draft-Model         # (e.g. speculative-decoding draft heads)
+engine_args:                # mapping form: --key value; true = bare flag
   max-model-len: 65536
   enable-prefix-caching: true
+probe:                      # optional generation-probe overrides
+  prompt: "Reply with exactly: READY"
+  max_tokens: 16
+  timeout_secs: 60
 notes: free text
 ```
 
-`host`, `port`, `served-model-name` in `vllm_args` are rejected — they are
-global constants. Preferred flow for a new model: add YAML → `docker pull`
+`engine_args` also accepts an **ordered list** of scalars appended verbatim
+(repeated flags, quoting-sensitive values):
+
+```yaml
+engine_args:
+  - --context-length
+  - "262144"
+  - --mem-fraction-static
+  - "0.80"
+```
+
+The engine's `reserved_args` (`--host`, `--port`, `--served-model-name`, and
+model placement for SGLang) are rejected in `engine_args` — they are global
+constants. `vllm_args` is still accepted as a deprecated alias for
+`engine_args`. Preferred flow for a new model: add YAML → `docker pull`
 the image → `download <name>` → `swap <name>`.
 
 ## Agent-facing skill
@@ -95,6 +120,7 @@ swaps.
 
 ```
 catalog/<name>.yaml     one file per model (validated on every run)
+engines.yaml            engine records: launcher, model placement, health paths
 bin/enigma-foundry      the CLI (python3 + pyyaml only)
 skill/SKILL.md          generic agent skill for the CLI
 docs/                   design & integration plans
@@ -105,9 +131,6 @@ docs/                   design & integration plans
 
 ## Roadmap
 
-- **SGLang engine support** alongside vLLM (engine abstraction, two-stage
-  health + generation probe, auxiliary draft-model downloads, digest-pinned
-  images): see `docs/sglang-integration-plan.md`.
 - `remove` and rollback path still need live-fire testing (rollback only
   triggered on synthetic failures so far).
 

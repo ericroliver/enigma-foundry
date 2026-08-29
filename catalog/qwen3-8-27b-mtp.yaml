@@ -1,5 +1,6 @@
 name: qwen3-8-27b-mtp
 hf_id: Qwen/Qwen3.8-27B
+engine: vllm
 image: nvcr.io/nvidia/vllm:26.06-py3
 entrypoint: serve-prefix
 shm_size: 32g
@@ -10,7 +11,7 @@ health_timeout_secs: 900
 # Qwen3.8) supports MTP on the shared qwen3_5 arch. If the container dies at
 # startup -> auto-rollback -> image bump needed. Expect ~9-10 TPS if it works.
 # --language-model-only deliberately omitted: image input capability retained.
-vllm_args:
+engine_args:
   max-model-len: 65536
   gpu-memory-utilization: 0.90
   enable-prefix-caching: true

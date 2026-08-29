@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-enigma-foundry — vLLM model server manager for the spark host.
+enigma-foundry — model server manager (vLLM and SGLang engines).
 
-Manages a catalog of vLLM-served models behind one stable endpoint:
+Manages a catalog of models behind one stable endpoint:
 container `vllm-server`, port 8000, served alias `enigma/default`.
 
 Subcommands: list | status | swap | download | remove | logs
@@ -54,7 +54,6 @@ DOWNLOAD_HARD_CAP = 6 * 3600   # s, absolute cap when downloading weights
 POLL_INTERVAL = 10             # s
 SPAWN_GRACE = 30               # s a "spawning" lock is considered alive
 
-FORBIDDEN_VLLM_ARGS = {"host", "port", "served-model-name", "served_model_name"}
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 PROGRESS_RE = re.compile(
     r"\d+(\.\d+)?%|it/s|[KMGT]i?B/s|Downloading|Fetching|snapshot_download", re.I
@@ -88,6 +87,50 @@ def atomic_write_json(path, data):
     os.replace(tmp, path)
 
 
+# ------------------------------- engines -------------------------------
+
+_ENGINES = None
+
+
+def engines():
+    """Engine records from engines.yaml (launcher, model placement, health paths)."""
+    global _ENGINES
+    if _ENGINES is None:
+        path = os.path.join(ROOT, "engines.yaml")
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f)
+        except (OSError, yaml.YAMLError) as e:
+            raise FoundryError(f"cannot load engines.yaml: {e}")
+        if not isinstance(data, dict) or not data:
+            raise FoundryError("engines.yaml: not a non-empty mapping")
+        for eng_name, rec in data.items():
+            if not isinstance(rec, dict):
+                raise FoundryError(f"engines.yaml: engine '{eng_name}': not a mapping")
+            for field in ("launcher", "model_argument", "readiness_path", "contract_path", "reserved_args"):
+                if field not in rec:
+                    raise FoundryError(f"engines.yaml: engine '{eng_name}': missing '{field}'")
+            if not isinstance(rec["launcher"], list) or not all(isinstance(x, str) for x in rec["launcher"]):
+                raise FoundryError(f"engines.yaml: engine '{eng_name}': launcher must be a list of strings")
+            if not (rec["model_argument"] == "positional" or str(rec["model_argument"]).startswith("--")):
+                raise FoundryError(
+                    f"engines.yaml: engine '{eng_name}': model_argument must be 'positional' or a --flag")
+            if not isinstance(rec["reserved_args"], list):
+                raise FoundryError(f"engines.yaml: engine '{eng_name}': reserved_args must be a list")
+        _ENGINES = data
+    return _ENGINES
+
+
+def entry_engine(entry):
+    """The engine record for a catalog entry (default vllm for legacy entries)."""
+    name = entry.get("engine", "vllm")
+    eng = engines().get(name)
+    if eng is None:
+        raise FoundryError(f"catalog entry '{entry.get('name', '?')}': unknown engine '{name}' "
+                           f"(defined: {sorted(engines())})")
+    return eng
+
+
 # ------------------------------- catalog -------------------------------
 
 def catalog_path(name):
@@ -99,20 +142,41 @@ def validate_entry(name, data):
         raise FoundryError(f"catalog entry '{name}': not a mapping")
     if data.get("name") != name:
         raise FoundryError(f"catalog entry '{name}': 'name' field must match filename")
-    for field in ("hf_id", "image", "entrypoint", "shm_size", "vllm_args", "est_size_gb"):
+    if "engine_args" in data and "vllm_args" in data:
+        raise FoundryError(f"catalog entry '{name}': set engine_args or vllm_args, not both")
+    if "vllm_args" in data:
+        print(f"warning: catalog entry '{name}': 'vllm_args' is deprecated, rename to 'engine_args'",
+              file=sys.stderr)
+        data["engine_args"] = data.pop("vllm_args")
+    for field in ("hf_id", "image", "entrypoint", "shm_size", "engine_args", "est_size_gb"):
         if field not in data:
             raise FoundryError(f"catalog entry '{name}': missing required field '{field}'")
+    data.setdefault("engine", "vllm")
+    eng = entry_engine(data)  # validates the engine name against engines.yaml
     if data["entrypoint"] not in ("serve-prefix", "bare"):
         raise FoundryError(f"catalog entry '{name}': entrypoint must be serve-prefix|bare")
+    if data["engine"] != "vllm" and data["entrypoint"] == "bare":
+        raise FoundryError(
+            f"catalog entry '{name}': engine '{data['engine']}' requires entrypoint: serve-prefix "
+            "(its launcher must be explicit in the container argv)")
     if not re.match(r"^\d+[gmk]$", str(data["shm_size"])):
         raise FoundryError(f"catalog entry '{name}': shm_size must look like 16g/32g")
-    if not isinstance(data["vllm_args"], dict):
-        raise FoundryError(f"catalog entry '{name}': vllm_args must be a mapping")
-    bad = FORBIDDEN_VLLM_ARGS & {str(k) for k in data["vllm_args"]}
+    args = data["engine_args"]
+    reserved = {str(a) for a in eng["reserved_args"]}
+    if isinstance(args, dict):
+        bad = {f"--{str(k).replace('_', '-')}" for k in args} & reserved
+    elif isinstance(args, list):
+        for item in args:
+            if not isinstance(item, (str, int, float)) or isinstance(item, bool):
+                raise FoundryError(
+                    f"catalog entry '{name}': engine_args list items must be scalars, got {item!r}")
+        bad = {str(i) for i in args} & reserved
+    else:
+        raise FoundryError(f"catalog entry '{name}': engine_args must be a mapping or an ordered list")
     if bad:
         raise FoundryError(
-            f"catalog entry '{name}': vllm_args must not set {sorted(bad)} — "
-            "host/port/served-model-name are global constants"
+            f"catalog entry '{name}': engine_args must not set {sorted(bad)} — "
+            "host/port/served-model-name and model placement are global constants"
         )
     try:
         float(data["est_size_gb"])
@@ -122,6 +186,24 @@ def validate_entry(name, data):
         data["health_timeout_secs"] = int(data.get("health_timeout_secs", DEFAULT_HEALTH_TIMEOUT))
     except (TypeError, ValueError):
         raise FoundryError(f"catalog entry '{name}': health_timeout_secs must be an int")
+    aux = data.get("aux_models")
+    if aux is not None:
+        if not isinstance(aux, list) or not all(isinstance(m, str) and "/" in m for m in aux):
+            raise FoundryError(
+                f"catalog entry '{name}': aux_models must be a list of HF repo ids (Org/Name)")
+    probe = data.get("probe")
+    if probe is not None:
+        if not isinstance(probe, dict):
+            raise FoundryError(f"catalog entry '{name}': probe must be a mapping")
+        unknown = set(probe) - {"prompt", "max_tokens", "timeout_secs"}
+        if unknown:
+            raise FoundryError(f"catalog entry '{name}': unknown probe keys {sorted(unknown)}")
+        for k in ("max_tokens", "timeout_secs"):
+            if k in probe:
+                try:
+                    probe[k] = int(probe[k])
+                except (TypeError, ValueError):
+                    raise FoundryError(f"catalog entry '{name}': probe.{k} must be an int")
     return data
 
 
@@ -153,8 +235,17 @@ def hub_dir(hf_id):
     return os.path.join(HF_HUB, "models--" + hf_id.replace("/", "--"))
 
 
-def weights_cached(entry):
-    d = hub_dir(entry["hf_id"])
+def aux_models(entry):
+    """Additional HF repos the entry needs (e.g. speculative draft models)."""
+    return list(entry.get("aux_models") or [])
+
+
+def all_hf_ids(entry):
+    return [entry["hf_id"]] + aux_models(entry)
+
+
+def _hf_cached(hf_id):
+    d = hub_dir(hf_id)
     if not os.path.isdir(d):
         return False
     for _root, _dirs, files in os.walk(d):
@@ -163,13 +254,32 @@ def weights_cached(entry):
     return False
 
 
+def weights_cached(entry):
+    """Primary weights AND all aux models must be in the HF cache."""
+    return all(_hf_cached(hf_id) for hf_id in all_hf_ids(entry))
+
+
 def image_present(image):
-    return run(["docker", "image", "inspect", image]).returncode == 0
+    """True if the image ref is available locally. Handles digest-pinned refs
+    (repo@sha256:...) which `docker image inspect` can miss depending on how
+    the image was pulled."""
+    if run(["docker", "image", "inspect", image]).returncode == 0:
+        return True
+    if "@sha256:" in image:
+        return image in images_present()
+    return False
 
 
 def images_present():
-    p = run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"])
-    return set(p.stdout.split()) if p.returncode == 0 else set()
+    """All local image refs in both tag and digest forms."""
+    p = run(["docker", "images", "--digests", "--no-trunc",
+             "--format", "{{.Repository}}:{{.Tag}} {{.Repository}}@{{.Digest}}"])
+    if p.returncode != 0:
+        return set()
+    refs = set()
+    for line in p.stdout.split():
+        refs.update(line.split())
+    return {r for r in refs if "<none>" not in r}
 
 
 # ---------------------------- live server state ----------------------------
@@ -240,24 +350,100 @@ def detect_live(entries=None):
     return None, info
 
 
+def engine_args_argv(entry):
+    """engine_args rendered to argv: mapping -> `--key value` (bare flag for
+    true booleans); ordered list -> verbatim scalars."""
+    args = entry["engine_args"]
+    if isinstance(args, dict):
+        cmd = []
+        for k, v in args.items():
+            if isinstance(v, bool):
+                if v:
+                    cmd.append(f"--{k}")
+            else:
+                cmd += [f"--{k}", str(v)]
+        return cmd
+    return [str(x) for x in args]
+
+
 def rendered_argv(entry):
     """The exact argv the container would run for this entry (everything after
-    `docker run ... <image>`)."""
+    `docker run ... <image>`). Engine record owns launcher + model placement."""
+    eng = entry_engine(entry)
     cmd = []
     if entry["entrypoint"] == "serve-prefix":
-        cmd += ["vllm", "serve"]
-    cmd += [entry["hf_id"]]
+        cmd += list(eng["launcher"])
+    if eng["model_argument"] == "positional":
+        cmd.append(entry["hf_id"])
+    else:
+        cmd += [eng["model_argument"], entry["hf_id"]]
+    # global constants — not negotiable, this is how agents survive swaps
     cmd += ["--host", "0.0.0.0", "--port", str(PORT), "--served-model-name", ALIAS]
-    for k, v in entry["vllm_args"].items():
-        if isinstance(v, bool):
-            if v:
-                cmd.append(f"--{k}")
-        else:
-            cmd += [f"--{k}", str(v)]
+    cmd += engine_args_argv(entry)
     return cmd
 
 
+def _get(path, timeout=5):
+    """GET localhost:PORT<path>. Returns (http_status, parsed_json|None)."""
+    try:
+        with urllib.request.urlopen(f"http://localhost:{PORT}{path}", timeout=timeout) as r:
+            body = r.read().decode()
+            return r.status, (json.loads(body) if body else None)
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except Exception:
+        return None, None
+
+
+def readiness_ok(entry):
+    """Stage 1: engine is up (vLLM and SGLang both expose /health)."""
+    status, _ = _get(entry_engine(entry)["readiness_path"])
+    return status == 200
+
+
+def contract_ok(entry):
+    """Stage 2: OpenAI contract — served alias listed on the models endpoint."""
+    status, data = _get(entry_engine(entry)["contract_path"])
+    if status != 200 or not isinstance(data, dict):
+        return False
+    return ALIAS in [m.get("id") for m in data.get("data", [])]
+
+
+def generation_probe(entry):
+    """Stage 3: one deterministic chat completion. Returns (ok, detail|None).
+
+    Template/parser breakage (chat template, reasoning parser, tool parser)
+    surfaces here instead of on the first agent request.
+    """
+    probe = entry.get("probe") or {}
+    prompt = probe.get("prompt", "Reply with exactly: READY")
+    max_tokens = int(probe.get("max_tokens", 16))
+    timeout = int(probe.get("timeout_secs", 60))
+    body = json.dumps({
+        "model": ALIAS,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        # keep reasoning models from burning the probe budget on thinking
+        "chat_template_kwargs": {"enable_thinking": False},
+    }).encode()
+    req = urllib.request.Request(
+        f"http://localhost:{PORT}/v1/chat/completions",
+        data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode())
+        msg = (data.get("choices") or [{}])[0].get("message") or {}
+        content = msg.get("content") or msg.get("reasoning_content")
+        if content and str(content).strip():
+            return True, None
+        return False, "empty completion content"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
 def health_ok():
+    """Engine-agnostic liveness used by status/detect_live: alias on /v1/models
+    (both supported engines publish the contract path identically)."""
     try:
         with urllib.request.urlopen(HEALTH_URL, timeout=5) as r:
             if r.status != 200:
@@ -357,15 +543,28 @@ def wait_healthy(entry, allow_download, log):
     start = time.time()
     deadline = start + (DOWNLOAD_HARD_CAP if allow_download else timeout)
     last_progress = start
+    stage = "readiness"  # readiness -> contract -> probe (monotonic)
+    last_probe_fail = None
     while True:
         info = container_info()
         if info is None:
             return False, "container vanished during startup", docker_tail()
         if info["status"] != "running":
             return False, f"container exited during startup (status={info['status']})", docker_tail()
-        if health_ok():
-            log(f"health check PASSED after {int(time.time() - start)}s")
-            return True, None, None
+        if stage == "readiness" and readiness_ok(entry):
+            log(f"stage 1/3 readiness passed after {int(time.time() - start)}s")
+            stage = "contract"
+        if stage == "contract" and contract_ok(entry):
+            log(f"stage 2/3 contract passed (alias {ALIAS} served) after {int(time.time() - start)}s")
+            stage = "probe"
+        if stage == "probe":
+            ok, detail = generation_probe(entry)
+            if ok:
+                log(f"stage 3/3 generation probe PASSED after {int(time.time() - start)}s")
+                return True, None, None
+            if detail != last_probe_fail:
+                log(f"generation probe not yet passing: {detail} (retrying)")
+                last_probe_fail = detail
         now = time.time()
         if allow_download:
             tail = docker_tail(40) or ""
@@ -378,6 +577,9 @@ def wait_healthy(entry, allow_download, log):
             if now > deadline:
                 return False, f"download hard cap {DOWNLOAD_HARD_CAP}s exceeded", tail[-4000:]
         elif now > deadline:
+            if last_probe_fail:
+                return False, (f"health timeout {timeout}s exceeded "
+                               f"(generation probe never passed: {last_probe_fail})"), docker_tail()
             return False, f"health timeout {timeout}s exceeded", docker_tail()
         time.sleep(POLL_INTERVAL)
 
@@ -415,13 +617,13 @@ def cmd_swap(args):
     if not image_present(entry["image"]):
         raise FoundryError(f"preflight FAILED: image not present locally: {entry['image']}")
     checks.append(f"image present: {entry['image']}")
-    cached = weights_cached(entry)
-    if cached:
-        checks.append(f"weights cached: {hub_dir(entry['hf_id'])}")
+    missing = [h for h in all_hf_ids(entry) if not _hf_cached(h)]
+    if not missing:
+        checks.append(f"weights cached: {', '.join(all_hf_ids(entry))}")
     else:
         if not args.allow_download:
             raise FoundryError(
-                f"preflight FAILED: weights for {entry['hf_id']} are not in the HF cache.\n"
+                f"preflight FAILED: weights not in the HF cache: {', '.join(missing)}.\n"
                 f"  Run first:  enigma-foundry download {args.name}\n"
                 f"  Or override: enigma-foundry swap {args.name} --allow-download"
             )
@@ -573,6 +775,7 @@ def cmd_download(args):
     dl_id = ts_id()
     journal_write("download", dl_id, {
         "download_id": dl_id, "target": args.name, "hf_id": entry["hf_id"],
+        "models": {hf_id: "pending" for hf_id in all_hf_ids(entry)},
         "started_at": now_iso(), "verdict": None, "finished_at": None,
     })
     atomic_write_json(DOWNLOAD_LOCK, {"pid": "spawning", "download_id": dl_id, "target": args.name})
@@ -598,17 +801,31 @@ def cmd_download_worker(dl_id):
         print(f"[{now_iso()}] {msg}", flush=True)
 
     try:
-        cmd = [
-            "docker", "run", "--rm",
-            "--entrypoint", "python3",
-            "-v", f"{HF_HOME}:/root/.cache/huggingface",
-            entry["image"], "-c",
-            f"from huggingface_hub import snapshot_download; snapshot_download({entry['hf_id']!r})",
-        ]
-        log(f"download worker started for {target}: {' '.join(cmd)}")
-        p = subprocess.run(cmd)  # output streams into our stdout (the log file)
-        log(f"downloader exited rc={p.returncode}")
-        ok = p.returncode == 0 and weights_cached(entry)
+        ok = True
+        for hf_id in all_hf_ids(entry):
+            if _hf_cached(hf_id):
+                log(f"already cached: {hf_id}")
+                journal["models"][hf_id] = "success"
+                journal_write("download", dl_id, journal)
+                continue
+            cmd = [
+                "docker", "run", "--rm",
+                "--entrypoint", "python3",
+                "-v", f"{HF_HOME}:/root/.cache/huggingface",
+                entry["image"], "-c",
+                f"from huggingface_hub import snapshot_download; snapshot_download({hf_id!r})",
+            ]
+            log(f"download worker started for {target}: {' '.join(cmd)}")
+            p = subprocess.run(cmd)  # output streams into our stdout (the log file)
+            log(f"downloader exited rc={p.returncode} ({hf_id})")
+            model_ok = p.returncode == 0 and _hf_cached(hf_id)
+            journal["models"][hf_id] = "success" if model_ok else "failed"
+            journal_write("download", dl_id, journal)
+            if not model_ok:
+                ok = False
+                log(f"aborting remaining downloads — {hf_id} failed")
+                break
+        ok = ok and weights_cached(entry)
         journal["verdict"] = "success" if ok else "failed"
         journal["finished_at"] = now_iso()
         journal_write("download", dl_id, journal)

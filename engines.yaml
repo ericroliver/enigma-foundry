@@ -1,0 +1,27 @@
+# Engine definitions — owned by code, not by catalog entries.
+# A catalog entry picks an engine with `engine: <name>`; the record here
+# controls how the container argv is built and how health is verified.
+#
+# Fields:
+#   launcher        argv prefix for `entrypoint: serve-prefix` entries
+#                   (bare entries omit it — their image IS the server)
+#   model_argument  "positional" (hf_id appended bare) or a "--flag" that
+#                   takes hf_id as its value
+#   readiness_path  polled for HTTP 200 first (engine up)
+#   contract_path   polled second — must list the served alias
+#   reserved_args   flags catalog engine_args may not set (global constants
+#                   or model placement — foundry owns them)
+
+vllm:
+  launcher: [vllm, serve]
+  model_argument: positional
+  readiness_path: /health
+  contract_path: /v1/models
+  reserved_args: [--host, --port, --served-model-name, --served_model_name]
+
+sglang:
+  launcher: [sglang, serve]
+  model_argument: --model-path
+  readiness_path: /health
+  contract_path: /v1/models
+  reserved_args: [--host, --port, --served-model-name, --served_model_name, --model, --model-path]
