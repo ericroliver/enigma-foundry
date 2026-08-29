@@ -1,0 +1,40 @@
+# Performance target — NVFP4 weights + DFlash2 speculative decoding on SGLang.
+# Research projects ~30-50 TPS code/structured reasoning on DGX Spark
+# (vs ~15-19 TPS vLLM FP8+MTP). Recipe validated for ARM64 in the official
+# SGLang Qwen3.8 cookbook; image pinned by multi-platform digest.
+name: qwen3-8-27b-nvfp4-dflash2
+engine: sglang
+hf_id: RadixArk/Qwen3.8-27B-NVFP4
+image: lmsysorg/sglang@sha256:616a3e97f45191af975896cfa644279096cb31bd408a071c2e99ca7209c3cafe
+entrypoint: serve-prefix
+shm_size: 32g
+est_size_gb: 34           # NVFP4 ~32G + DFlash2 draft head; est covers primary+aux
+health_timeout_secs: 900
+aux_models:
+  - incoai/Qwen3.8-27B-DFlash2
+engine_args:
+  - --context-length
+  - "262144"
+  - --mem-fraction-static
+  - "0.80"          # NVIDIA Spark playbook: 0.85 trips earlyoom on unified memory; 0.80 served in all tested configs
+  - --attention-backend
+  - flashinfer
+  - --chunked-prefill-size
+  - "2048"
+  - --mamba-ssm-dtype
+  - bfloat16
+  - --mamba-radix-cache-strategy
+  - extra_buffer
+  - --reasoning-parser
+  - qwen3
+  - --tool-call-parser
+  - qwen3_coder
+  - --sampling-defaults
+  - model
+  - --disable-prefill-cuda-graph
+  - --speculative-algorithm
+  - DFLASH
+  - --speculative-draft-model-path
+  - incoai/Qwen3.8-27B-DFlash2
+  - --speculative-num-draft-tokens
+  - "8"

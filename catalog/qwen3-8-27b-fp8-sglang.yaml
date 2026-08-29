@@ -1,0 +1,24 @@
+# SGLang integration canary — same FP8 weights as the live vLLM entry
+# (already cached, 29 GiB), on the pinned SGLang ARM64-capable image.
+# Proves the engine plumbing cheaply before the NVFP4+DFlash2 cutover.
+# Image: lmsysorg/sglang:dev-qwen38-27b-dflash2, multi-platform digest
+# (registry resolves the ARM64 manifest on spark).
+name: qwen3-8-27b-fp8-sglang
+engine: sglang
+hf_id: Qwen/Qwen3.8-27B-FP8
+image: lmsysorg/sglang@sha256:616a3e97f45191af975896cfa644279096cb31bd408a071c2e99ca7209c3cafe
+entrypoint: serve-prefix
+shm_size: 32g
+est_size_gb: 30
+health_timeout_secs: 900
+engine_args:
+  - --context-length
+  - "65536"
+  - --mem-fraction-static
+  - "0.80"          # NVIDIA Spark playbook: 0.85 trips earlyoom on unified memory; 0.80 served in all tested configs
+  - --reasoning-parser
+  - qwen3
+  - --tool-call-parser
+  - qwen3_coder
+  - --sampling-defaults
+  - model
