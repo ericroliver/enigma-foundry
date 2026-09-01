@@ -1,0 +1,71 @@
+# Qwen3.8-Flash-Next NVFP4 on one GB10 (DGX Spark) — patched vLLM serving the
+# 44 GiB PLE n-gram table via mmap from local NVMe so the 122 GiB checkpoint
+# fits the 128 GB unified pool (~76 GiB resident).
+#
+# Correctness-baseline profile per docs/Qwen3.8-Flash-Next-DGX-Spark-Forge-Recipe.md:
+# MTP off, prefix caching on, exact deterministic QSA top-k, bf16 (auto) KV,
+# PIECEWISE cudagraphs with the PLE lookup declared as a splitting op.
+# MTP=2 candidate (add after baseline passes):
+#   - --speculative-config
+#   - '{"method":"mtp","num_speculative_tokens":2}'
+#
+# Image is built ON spark from the pinned patch source (no internal registry):
+#   github.com/blazux/qwen3.8-Flash-DGX @ 209646cd98290035ccbddef29b14c460460a8709
+#   on vllm/vllm-openai:qwen38-flash-next@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8
+name: qwen3-8-flash-next-nvfp4
+engine: vllm
+hf_id: RadixArk/Qwen3.8-Flash-Next-NVFP4
+image: forge/qwen38-flash-next:209646c
+entrypoint: bare            # vllm-openai image entrypoint already is `vllm serve`
+shm_size: 16g
+est_size_gb: 130            # ~122 GiB blobs + headroom
+health_timeout_secs: 1200   # recipe: initial load 8-13 min, gate at 20 min
+environment:
+  HF_HUB_OFFLINE: "1"                 # serve-time only; download worker strips it
+  VLLM_PLE_MMAP: "1"                  # the patch that makes it fit
+  VLLM_PLE_MMAP_WORKERS: "32"
+  VLLM_PLE_MMAP_PREWARM: "0"          # 48 GiB prewarm competes with KV for the same pool
+  VLLM_QSA_EXACT_TOPK: "1"            # GB10 stock top-k is non-deterministic (correctness)
+  VLLM_USE_FLASHINFER_SAMPLER: "1"
+mounts:                     # persistent compile caches; siblings of the HF mount (no nesting)
+  - source: /home/eo/enigma-foundry-state/runtime-cache/qwen3-8-flash-next-nvfp4/vllm
+    target: /root/.cache/vllm
+    read_only: false
+  - source: /home/eo/enigma-foundry-state/runtime-cache/qwen3-8-flash-next-nvfp4/triton
+    target: /root/.triton
+    read_only: false
+drop_cache_below_gb: 60     # unified memory: page cache counts against vLLM.
+                            # needs a sudoers rule for drop_caches on spark; warns + continues without it
+engine_args:                # list form: splitting_ops JSON must survive as ONE argv value
+  - --load-format
+  - safetensors
+  - --max-model-len
+  - "262144"
+  - --max-num-seqs
+  - "4"
+  - --gpu-memory-utilization
+  - "0.80"                  # 0.85+ drifts into swap / OOM on long prefills (recipe)
+  - --enable-prefix-caching # correct only with the image's mamba block_size fix
+  - --enable-chunked-prefill
+  - --max-num-batched-tokens
+  - "8192"
+  - -cc.cudagraph_mode=PIECEWISE
+  - '-cc.splitting_ops=["vllm::unified_attention_with_output","vllm::unified_mla_attention_with_output","vllm::mamba_mixer2","vllm::mamba_mixer","vllm::short_conv","vllm::qwen3_8_flash_next_ple_short_conv","vllm::qwen3_8_flash_next_qsa_with_output","vllm::linear_attention","vllm::qwen_gdn_attention_core","vllm::qwen_gdn_attention_core_fused_norm_packed","vllm::sparse_attn_indexer","vllm::ple_mmap_lookup"]'
+  - --no-enable-flashinfer-autotune
+  - --kv-cache-dtype
+  - auto                    # fp8 KV excluded from baseline (speed+quality cost)
+  - --enable-auto-tool-choice
+  - --tool-call-parser
+  - qwen3_xml               # official vLLM recipe; serve.sh uses qwen3_coder — A/B later if needed
+  - --reasoning-parser
+  - qwen3
+probe:
+  prompt: "Reply with exactly: READY"
+  max_tokens: 64
+  timeout_secs: 180         # cold PLE pages make the first generations slower
+notes: >
+  Experimental evaluation candidate — do not promote to default. Checkpoint is a
+  RadixArk candidate release validated upstream on GB300/B300, not GB10; license
+  is nonstandard 'other' (source-model terms). Weights resolve offline from the
+  foundry HF cache (HF_HUB_OFFLINE=1); mmap reads the PLE table through the page
+  cache, so cold first long prompts are expected (2-3x prefill, warms after).

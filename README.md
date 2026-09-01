@@ -124,6 +124,12 @@ constants. `vllm_args` is still accepted as a deprecated alias for
 `engine_args`. Preferred flow for a new model: add YAML → `docker pull`
 the image → `download <name>` → `swap <name>`.
 
+Download-time env handling: serve-time offline guards (`HF_HUB_OFFLINE`,
+`HUGGING_FACE_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`) are stripped from the
+entry's `environment` for the download container, and `HF_HUB_DISABLE_XET=1`
+is set by default (Xet stalls observed on DGX Spark; plain HTTPS is resumable)
+— an entry may override it explicitly.
+
 ## Agent-facing skill
 
 `skill/SKILL.md` is a generic, deployable [goose](https://github.com/block/goose)

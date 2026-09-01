@@ -885,12 +885,20 @@ def cmd_download_worker(dl_id):
                 journal["models"][hf_id] = "success"
                 journal_write("download", dl_id, journal)
                 continue
+            # Serve-time env carries offline guards (HF_HUB_OFFLINE=1) that would
+            # make every Hub call fail — strip them for the download. Xet is
+            # disabled by default (stalls observed on Spark; plain HTTPS is
+            # resumable and saturates the link) unless the entry says otherwise.
+            dl_env = {k: v for k, v in (entry.get("environment") or {}).items()
+                      if k not in ("HF_HUB_OFFLINE", "HUGGING_FACE_HUB_OFFLINE",
+                                   "TRANSFORMERS_OFFLINE")}
+            dl_env.setdefault("HF_HUB_DISABLE_XET", "1")
             cmd = [
                 "docker", "run", "--rm",
                 "--entrypoint", "python3",
                 "-v", f"{HF_HOME}:/root/.cache/huggingface",
             ]
-            cmd += docker_env_args(entry)
+            cmd += docker_env_args(dict(entry, environment=dl_env))
             cmd += [
                 entry["image"], "-c",
                 f"from huggingface_hub import snapshot_download; snapshot_download({hf_id!r})",
