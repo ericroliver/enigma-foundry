@@ -204,6 +204,33 @@ def validate_entry(name, data):
                     probe[k] = int(probe[k])
                 except (TypeError, ValueError):
                     raise FoundryError(f"catalog entry '{name}': probe.{k} must be an int")
+    env = data.get("environment")
+    if env is not None:
+        if not isinstance(env, dict):
+            raise FoundryError(f"catalog entry '{name}': environment must be a mapping")
+        for k, v in env.items():
+            if not isinstance(k, str) or not k:
+                raise FoundryError(f"catalog entry '{name}': environment keys must be non-empty strings")
+            if isinstance(v, bool) or not isinstance(v, (str, int, float)):
+                raise FoundryError(
+                    f"catalog entry '{name}': environment['{k}'] must be a scalar — "
+                    "quote values like \"1\" (unquoted YAML booleans render as 'True')")
+    mounts = data.get("mounts")
+    if mounts is not None:
+        if not isinstance(mounts, list):
+            raise FoundryError(f"catalog entry '{name}': mounts must be a list")
+        for m in mounts:
+            if not isinstance(m, dict) or not isinstance(m.get("source"), str) \
+                    or not isinstance(m.get("target"), str):
+                raise FoundryError(
+                    f"catalog entry '{name}': each mount must be a mapping with source and target")
+            if "read_only" in m and not isinstance(m["read_only"], bool):
+                raise FoundryError(f"catalog entry '{name}': mount read_only must be a boolean")
+    if "drop_cache_below_gb" in data:
+        try:
+            data["drop_cache_below_gb"] = float(data["drop_cache_below_gb"])
+        except (TypeError, ValueError):
+            raise FoundryError(f"catalog entry '{name}': drop_cache_below_gb must be numeric")
     return data
 
 
@@ -494,6 +521,24 @@ def lock_status(path):
 
 # ------------------------------- helpers -------------------------------
 
+def docker_env_args(entry):
+    """-e KEY=VALUE pairs from the catalog entry's `environment` mapping."""
+    env = entry.get("environment") or {}
+    args = []
+    for k, v in env.items():
+        args += ["-e", f"{k}={v}"]
+    return args
+
+
+def docker_mount_args(entry):
+    """Extra -v mounts from the catalog entry's `mounts` list (read_only -> :ro)."""
+    args = []
+    for m in entry.get("mounts") or []:
+        spec = f"{m['source']}:{m['target']}" + (":ro" if m.get("read_only") else "")
+        args += ["-v", spec]
+    return args
+
+
 def render_run_cmd(entry):
     cmd = [
         "docker", "run", "-d",
@@ -504,8 +549,9 @@ def render_run_cmd(entry):
         "--network", "host",
         "--shm-size", str(entry["shm_size"]),
         "-v", f"{HF_HOME}:/root/.cache/huggingface",
-        entry["image"],
     ]
+    cmd += docker_env_args(entry) + docker_mount_args(entry)
+    cmd.append(entry["image"])
     # global constants (--host/--port/--served-model-name) live in rendered_argv —
     # not negotiable, this is how agents survive swaps
     cmd += rendered_argv(entry)
@@ -655,6 +701,35 @@ def cmd_swap(args):
     print(f"After reconnect:  enigma-foundry status   |   enigma-foundry logs {swap_id}")
 
 
+def maybe_drop_page_cache(entry, log):
+    """If entry sets drop_cache_below_gb and MemAvailable is below it, sync +
+    sudo -n drop_caches. Runs between old-container exit and candidate start —
+    unified-memory hosts count the page cache against what vLLM can use."""
+    threshold = entry.get("drop_cache_below_gb")
+    if threshold is None:
+        return
+    avail_gb = None
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    avail_gb = float(line.split()[1]) / (1024 ** 2)
+                    break
+    except OSError:
+        pass
+    if avail_gb is not None and avail_gb >= threshold:
+        log(f"page-cache hygiene: MemAvailable {avail_gb:.1f} GiB >= "
+            f"threshold {threshold} GiB — no drop needed")
+        return
+    why = f"MemAvailable {avail_gb:.1f} GiB" if avail_gb is not None else "MemAvailable unreadable"
+    log(f"page-cache hygiene: {why} < threshold {threshold} GiB — dropping caches")
+    run(["sync"])
+    p = run(["sudo", "-n", "sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"])
+    if p.returncode != 0:
+        log("warning: drop_caches failed (sudo -n) — continuing; "
+            "the host needs a sudoers rule for /proc/sys/vm/drop_caches")
+
+
 def cmd_swap_worker(swap_id):
     try:
         with open(PENDING_JSON) as f:
@@ -700,6 +775,7 @@ def cmd_swap_worker(swap_id):
 
         log(f"removing container {CONTAINER}")
         run(["docker", "rm", "-f", CONTAINER])
+        maybe_drop_page_cache(entry, log)
 
         cmd = render_run_cmd(entry)
         log("starting: " + " ".join(cmd))
@@ -730,6 +806,7 @@ def cmd_swap_worker(swap_id):
 
         log(f"auto-rollback to {prev_name}")
         run(["docker", "rm", "-f", CONTAINER])
+        maybe_drop_page_cache(prev, log)
         p = run(render_run_cmd(prev))
         if p.returncode != 0:
             rb_ok, rb_reason, rb_tail = False, f"docker run failed rc={p.returncode}: {p.stderr.strip()}", None
@@ -812,6 +889,9 @@ def cmd_download_worker(dl_id):
                 "docker", "run", "--rm",
                 "--entrypoint", "python3",
                 "-v", f"{HF_HOME}:/root/.cache/huggingface",
+            ]
+            cmd += docker_env_args(entry)
+            cmd += [
                 entry["image"], "-c",
                 f"from huggingface_hub import snapshot_download; snapshot_download({hf_id!r})",
             ]
