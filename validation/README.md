@@ -34,4 +34,7 @@ recorded at every rung; watch for empty-final-content and swap growth.
 
 | Date | Model entry | Data | Verdict | File |
 |---|---|---|---|---|
-| 2026-09-01 | qwen3-8-flash-next-nvfp4 (MTP=0) | random-word soup, positions early/mid/late(90%) | **FAIL** — all late misses 32K+, early/mid 100% | results/ladder-20260901-213633-wordsoup-v1.json |
+| 2026-09-01 | qwen3-8-flash-next-nvfp4 (MTP=0) | random-word soup, early/mid/late(90%) | **FAIL** — all late misses 32K+ | results/ladder-20260901-213633-wordsoup-v1.json |
+| 2026-09-02 | qwen3-8-flash-next-nvfp4 (MTP=2) | natural Gutenberg prose, 10/25/50/75/90/97% + controls | **PASS 42/42** | results/ladder-20260902-134435-prose-v2.json |
+
+Full analysis: [RESULTS-qwen3-8-flash-next.md](RESULTS-qwen3-8-flash-next.md).
