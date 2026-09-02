@@ -59,6 +59,8 @@ engine_args:                # list form: splitting_ops JSON must survive as ONE 
   - qwen3_xml               # official vLLM recipe; serve.sh uses qwen3_coder — A/B later if needed
   - --reasoning-parser
   - qwen3
+  - --speculative-config            # MTP=2 candidate: model's built-in speculative head
+  - '{"method":"mtp","num_speculative_tokens":2}'
 probe:
   prompt: "Reply with exactly: READY"
   max_tokens: 64
