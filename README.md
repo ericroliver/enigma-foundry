@@ -103,11 +103,32 @@ engine_args:
   - "0.80"
 ```
 
+Optional fields for runtime environments and mounts:
+
+```yaml
+environment:                # rendered as -e KEY=VALUE; quote values like "1"
+  HF_HUB_OFFLINE: "1"
+  VLLM_PLE_MMAP: "1"
+mounts:                     # extra -v mounts; read_only: true adds :ro
+  - source: /srv/forge/qwen38/runtime-cache
+    target: /root/.cache
+    read_only: false
+drop_cache_below_gb: 60     # optional: swap worker syncs and drops page caches
+                            # (sudo -n) when MemAvailable is below this threshold,
+                            # between old-container exit and candidate start
+```
+
 The engine's `reserved_args` (`--host`, `--port`, `--served-model-name`, and
 model placement for SGLang) are rejected in `engine_args` — they are global
 constants. `vllm_args` is still accepted as a deprecated alias for
 `engine_args`. Preferred flow for a new model: add YAML → `docker pull`
 the image → `download <name>` → `swap <name>`.
+
+Download-time env handling: serve-time offline guards (`HF_HUB_OFFLINE`,
+`HUGGING_FACE_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`) are stripped from the
+entry's `environment` for the download container, and `HF_HUB_DISABLE_XET=1`
+is set by default (Xet stalls observed on DGX Spark; plain HTTPS is resumable)
+— an entry may override it explicitly.
 
 ## Agent-facing skill
 
