@@ -40,7 +40,7 @@ engine_args:                # list form: splitting_ops JSON must survive as ONE 
   - --load-format
   - safetensors
   - --max-model-len
-  - "131072"                # experiment 2026-09-17: cap at 128k — agents slow down hard beyond it (PLE page-cache cliff suspected)
+  - "262144"
   - --max-num-seqs
   - "4"
   - --gpu-memory-utilization
