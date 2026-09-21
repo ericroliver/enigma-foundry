@@ -27,6 +27,19 @@ python3 ladder.py --rungs 64000 --positions 50,90,none   # spot check
 - Per rung captures host MemAvailable/swap before-after (ssh to `spark`).
 - Exit code 0 = all probes passed.
 
+## tps-benchmark.py — agent-shaped throughput benchmark
+
+Read-only OpenAI-compatible load generator for either engine (vLLM/SGLang).
+N concurrent streamed chat completions with a long shared prefix (agent-like:
+repeated system prompt), measuring per-request TTFT, decode tok/s, and
+aggregate tok/s. Used to A/B engines during the SGLang cutover (see
+docs/sglang-cutover-runbook.md).
+
+```bash
+python3 tps-benchmark.py --concurrency 2 --requests 4   # baseline profile
+python3 tps-benchmark.py --no-prefix                    # pure decode, cold cache
+```
+
 Acceptance (recipe): 64K deterministic needle set at 100%; retrieval accuracy
 recorded at every rung; watch for empty-final-content and swap growth.
 
