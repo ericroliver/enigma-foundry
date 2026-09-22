@@ -12,7 +12,9 @@
 name: qwen3-8-flash-next-nvidia-hybrid
 engine: vllm
 hf_id: nvidia/Qwen3.8-Flash-Next-NVFP4
-model_arg_override: /hf/hub/models--nvidia--Qwen3.8-Flash-Next-NVFP4/snapshots/fc694b54fb0174e0913e6adf86691ef85a4ead47-fp8hybrid
+# NOTE: foundry mounts HF cache at /root/.cache/huggingface (not serve.sh's /hf) —
+# first swap attempt 20260922-140511 rolled back on this; engine verified OK at this path.
+model_arg_override: /root/.cache/huggingface/hub/models--nvidia--Qwen3.8-Flash-Next-NVFP4/snapshots/fc694b54fb0174e0913e6adf86691ef85a4ead47-fp8hybrid
 image: qwen38-flash-dgx
 entrypoint: bare            # image entrypoint is `vllm serve`
 shm_size: 16g
