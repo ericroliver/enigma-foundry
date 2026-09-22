@@ -1,6 +1,9 @@
 # SGLang Cutover Runbook — spark (GB10)
 
-Status: **prep complete 2026-09-21; swap awaits operator-approved downtime window.**
+Status: **parked 2026-09-22** — operator chose Option B (vLLM flash-next update)
+first; SGLang stays fully prepped as candidate #2. See
+`docs/flash-next-interactive-tuning-research.md` and the Option B runbook below.
+Original prep state (unchanged):
 Companion to `docs/sglang-integration-plan.md` (design) and the enigma-foundry
 skill (swap semantics). All swaps run through `enigma-foundry` — never raw docker.
 
