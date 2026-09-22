@@ -27,7 +27,8 @@ environment:
   HF_HUB_OFFLINE: "1"
   VLLM_PLE_MMAP: "1"
   VLLM_PLE_MMAP_WORKERS: "32"
-  VLLM_PLE_MMAP_PREWARM: "1"          # stream the 48 GiB table once at boot
+  VLLM_PLE_MMAP_PREWARM: "0"          # first-boot: no 48G page-cache spike (20260922
+                                      # incident); warm via live traffic. Revisit to "1".
   VLLM_PLE_MMAP_MADVISE: "random"
   VLLM_PLE_MMAP_FAST_ROWS: "0"
   VLLM_QSA_EXACT_TOPK: "0"
