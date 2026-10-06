@@ -1,0 +1,88 @@
+# Qwen3.8-Flash-Next NVIDIA checkpoint, hybrid mode — Option B (operator research
+# 2026-09-22): fix interactive-agent throughput on GB10 without leaving the
+# flash-next stack. Key deltas vs the live RadixArk entry: deterministic QSA
+# top-k kernel (EXACT_TOPK=0/DET_TOPK=1, exact torch.topk costs 20-40% on long
+# prefills), fp8 hybrid side layers (+15-22% KV capacity), FAST_ROWS=0 (all PLE
+# gathers on the thread pool, ~+17% aggregate decode), MTP draft vocab 65k
+# (+20% decode), prefill fairness threshold 2048.
+# See docs/flash-next-interactive-tuning-research.md and -update-runbook.md.
+# Image built from github.com/blazux/qwen3.8-Flash-DGX @ 5be6637 (52 commits
+# ahead of the 209646c image the live entry uses). No --kv-cache-memory: the
+# unified-pool trade (KV vs PLE page cache) is documented in the research doc.
+name: qwen3-8-flash-next-nvidia-hybrid
+engine: vllm
+hf_id: nvidia/Qwen3.8-Flash-Next-NVFP4
+# NOTE: foundry mounts HF cache at /root/.cache/huggingface (not serve.sh's /hf) —
+# first swap attempt 20260922-140511 rolled back on this; engine verified OK at this path.
+model_arg_override: /root/.cache/huggingface/hub/models--nvidia--Qwen3.8-Flash-Next-NVFP4/snapshots/fc694b54fb0174e0913e6adf86691ef85a4ead47-fp8hybrid
+image: qwen38-flash-dgx
+entrypoint: bare            # image entrypoint is `vllm serve`
+shm_size: 16g
+est_size_gb: 200
+health_timeout_secs: 1200
+docker_flags:               # PROM_MULTIPROC: engine-side vllm:ple_mmap_* metrics
+  - --tmpfs
+  - /tmp/vllm-prometheus:rw,size=256m
+environment:
+  HF_HUB_OFFLINE: "1"
+  VLLM_PLE_MMAP: "1"
+  VLLM_PLE_MMAP_WORKERS: "32"
+  VLLM_PLE_MMAP_PREWARM: "0"          # first-boot: no 48G page-cache spike (20260922
+                                      # incident); warm via live traffic. Revisit to "1".
+  VLLM_PLE_MMAP_MADVISE: "random"
+  VLLM_PLE_MMAP_FAST_ROWS: "0"
+  VLLM_QSA_EXACT_TOPK: "0"
+  VLLM_QSA_DET_TOPK: "1"
+  VLLM_QSA_DET_LIB: /opt/llm/kernel-det/_C_det.so
+  VLLM_MTP_DRAFT_VOCAB: /opt/llm/draft_vocab_65536.npy
+  VLLM_FP8_HYBRID: "1"
+  VLLM_USE_DEEP_GEMM: "0"
+  VLLM_FP8_PAD_M4: "0"
+  VLLM_USE_FLASHINFER_SAMPLER: "1"
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+  PROMETHEUS_MULTIPROC_DIR: /tmp/vllm-prometheus
+mounts:
+  - source: /home/eo/enigma-foundry-state/runtime-cache/qwen3-8-flash-next-nvidia-hybrid/vllm
+    target: /root/.cache/vllm
+    read_only: false
+  - source: /home/eo/enigma-foundry-state/runtime-cache/qwen3-8-flash-next-nvidia-hybrid/triton
+    target: /root/.triton
+    read_only: false
+engine_args:
+  - --load-format
+  - safetensors
+  - --max-model-len
+  - "262144"
+  - --max-num-seqs
+  - "4"
+  - --gpu-memory-utilization
+  - "0.80"
+  - --enable-prefix-caching
+  - --enable-chunked-prefill
+  - --max-num-batched-tokens
+  - "8192"
+  - --long-prefill-token-threshold
+  - "2048"
+  - -cc.cudagraph_mode=PIECEWISE
+  - '-cc.splitting_ops=["vllm::unified_attention_with_output","vllm::unified_mla_attention_with_output","vllm::mamba_mixer2","vllm::mamba_mixer","vllm::short_conv","vllm::qwen3_8_flash_next_ple_short_conv","vllm::qwen3_8_flash_next_qsa_with_output","vllm::linear_attention","vllm::qwen_gdn_attention_core","vllm::qwen_gdn_attention_core_fused_norm_packed","vllm::sparse_attn_indexer","vllm::ple_mmap_lookup"]'
+  - --no-enable-flashinfer-autotune
+  - --kv-cache-dtype
+  - auto
+  - --enable-auto-tool-choice
+  - --tool-call-parser
+  - qwen3_coder
+  - --reasoning-parser
+  - qwen3
+  - --speculative-config
+  - '{"method":"mtp","num_speculative_tokens":2}'
+probe:
+  prompt: "Reply with exactly: READY"
+  max_tokens: 64
+  timeout_secs: 240
+notes: >
+  Interactive-agent performance profile (Option B). NOT a correctness re-baseline:
+  det-topk is the deterministic kernel (same tournament score), but tool parser
+  changed qwen3_xml -> qwen3_coder (serve.sh default for this checkpoint) and fp8
+  side layers add ~3.5% max tensor error per prepare-hybrid. Rollback target:
+  qwen3-8-flash-next-nvfp4. Weights resolve offline from the foundry HF cache;
+  the -fp8hybrid snapshot is served via model_arg_override.

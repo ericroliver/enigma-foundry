@@ -153,6 +153,12 @@ def validate_entry(name, data):
             raise FoundryError(f"catalog entry '{name}': missing required field '{field}'")
     data.setdefault("engine", "vllm")
     eng = entry_engine(data)  # validates the engine name against engines.yaml
+    if "model_arg_override" in data and not isinstance(data["model_arg_override"], str):
+        raise FoundryError(f"catalog entry '{name}': model_arg_override must be a string (local model path)")
+    if "docker_flags" in data:
+        fl = data["docker_flags"]
+        if not isinstance(fl, list) or not all(isinstance(x, (str, int, float)) for x in fl):
+            raise FoundryError(f"catalog entry '{name}': docker_flags must be a list of scalars")
     if data["entrypoint"] not in ("serve-prefix", "bare"):
         raise FoundryError(f"catalog entry '{name}': entrypoint must be serve-prefix|bare")
     if data["engine"] != "vllm" and data["entrypoint"] == "bare":
@@ -370,7 +376,7 @@ def detect_live(entries=None):
 
     live_argv = info["cmdline"].split()  # no quoting in our rendered args, so split() is exact
     for name, e in entries.items():
-        if e["image"] != info["image"] or e["hf_id"] not in live_argv:
+        if e["image"] != info["image"] or e.get("model_arg_override", e["hf_id"]) not in live_argv:
             continue
         if rendered_argv(e) == live_argv:
             return name, info
@@ -400,10 +406,13 @@ def rendered_argv(entry):
     cmd = []
     if entry["entrypoint"] == "serve-prefix":
         cmd += list(eng["launcher"])
+    # model_arg_override: optional local path (e.g. a -fp8hybrid prepared snapshot)
+    # served INSTEAD of hf_id; weights/preflight checks still use hf_id.
+    model_arg = entry.get("model_arg_override", entry["hf_id"])
     if eng["model_argument"] == "positional":
-        cmd.append(entry["hf_id"])
+        cmd.append(model_arg)
     else:
-        cmd += [eng["model_argument"], entry["hf_id"]]
+        cmd += [eng["model_argument"], model_arg]
     # global constants — not negotiable, this is how agents survive swaps
     cmd += ["--host", "0.0.0.0", "--port", str(PORT), "--served-model-name", ALIAS]
     cmd += engine_args_argv(entry)
@@ -551,6 +560,7 @@ def render_run_cmd(entry):
         "-v", f"{HF_HOME}:/root/.cache/huggingface",
     ]
     cmd += docker_env_args(entry) + docker_mount_args(entry)
+    cmd += [str(f) for f in entry.get("docker_flags") or []]
     cmd.append(entry["image"])
     # global constants (--host/--port/--served-model-name) live in rendered_argv —
     # not negotiable, this is how agents survive swaps
