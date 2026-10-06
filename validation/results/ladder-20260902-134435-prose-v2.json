@@ -1,0 +1,589 @@
+{
+ "args": {
+  "rungs": "8000,32000,64000,128000,200000,250000",
+  "positions": "10,25,50,75,90,97,none",
+  "base": "http://localhost:8000",
+  "seed": 20260902,
+  "outdir": "/home/eo/validation-results"
+ },
+ "verdict": "PASS",
+ "misses": [],
+ "results": [
+  {
+   "rung": 8000,
+   "pos": "10%",
+   "codeword": "ANVIL-839",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 8027,
+   "completion_tok": 8,
+   "elapsed_s": 9.05,
+   "prefill_tps": 886.5,
+   "content": "ANVIL-839"
+  },
+  {
+   "rung": 8000,
+   "pos": "25%",
+   "codeword": "DERRICK-311",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 8028,
+   "completion_tok": 8,
+   "elapsed_s": 9.05,
+   "prefill_tps": 887.1,
+   "content": "DERRICK-311"
+  },
+  {
+   "rung": 8000,
+   "pos": "50%",
+   "codeword": "CINDER-749",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 7981,
+   "completion_tok": 7,
+   "elapsed_s": 2.38,
+   "prefill_tps": 3360.3,
+   "content": "CINDER-749"
+  },
+  {
+   "rung": 8000,
+   "pos": "75%",
+   "codeword": "HARVEST-670",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 8027,
+   "completion_tok": 8,
+   "elapsed_s": 8.92,
+   "prefill_tps": 899.8,
+   "content": "HARVEST-670"
+  },
+  {
+   "rung": 8000,
+   "pos": "90%",
+   "codeword": "TIMBER-775",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 7983,
+   "completion_tok": 7,
+   "elapsed_s": 2.67,
+   "prefill_tps": 2991.7,
+   "content": "TIMBER-775"
+  },
+  {
+   "rung": 8000,
+   "pos": "97%",
+   "codeword": "LANTERN-393",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 8047,
+   "completion_tok": 8,
+   "elapsed_s": 9.24,
+   "prefill_tps": 871.1,
+   "content": "LANTERN-393"
+  },
+  {
+   "rung": 8000,
+   "pos": "control",
+   "codeword": null,
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 8027,
+   "completion_tok": 2,
+   "elapsed_s": 1.91,
+   "prefill_tps": 4203.2,
+   "content": "none"
+  },
+  {
+   "rung": 8000,
+   "rung_elapsed_s": 47.6,
+   "mem_avail_gb": [
+    null,
+    null
+   ],
+   "swap_used_gb": [
+    null,
+    null
+   ]
+  },
+  {
+   "rung": 32000,
+   "pos": "10%",
+   "codeword": "QUARRY-166",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 32027,
+   "completion_tok": 7,
+   "elapsed_s": 32.87,
+   "prefill_tps": 974.4,
+   "content": "QUARRY-166"
+  },
+  {
+   "rung": 32000,
+   "pos": "25%",
+   "codeword": "DERRICK-612",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 32036,
+   "completion_tok": 8,
+   "elapsed_s": 33.24,
+   "prefill_tps": 963.9,
+   "content": "DERRICK-612"
+  },
+  {
+   "rung": 32000,
+   "pos": "50%",
+   "codeword": "DERRICK-398",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 31865,
+   "completion_tok": 8,
+   "elapsed_s": 32.47,
+   "prefill_tps": 981.5,
+   "content": "DERRICK-398"
+  },
+  {
+   "rung": 32000,
+   "pos": "75%",
+   "codeword": "HARVEST-295",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 32056,
+   "completion_tok": 8,
+   "elapsed_s": 33.49,
+   "prefill_tps": 957.1,
+   "content": "HARVEST-295"
+  },
+  {
+   "rung": 32000,
+   "pos": "90%",
+   "codeword": "COPPER-177",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 31841,
+   "completion_tok": 8,
+   "elapsed_s": 33.47,
+   "prefill_tps": 951.3,
+   "content": "COPPER-177"
+  },
+  {
+   "rung": 32000,
+   "pos": "97%",
+   "codeword": "HARVEST-883",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 31863,
+   "completion_tok": 8,
+   "elapsed_s": 32.53,
+   "prefill_tps": 979.6,
+   "content": "HARVEST-883"
+  },
+  {
+   "rung": 32000,
+   "pos": "control",
+   "codeword": null,
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 32035,
+   "completion_tok": 2,
+   "elapsed_s": 32.93,
+   "prefill_tps": 972.7,
+   "content": "none"
+  },
+  {
+   "rung": 32000,
+   "rung_elapsed_s": 256.4,
+   "mem_avail_gb": [
+    null,
+    null
+   ],
+   "swap_used_gb": [
+    null,
+    null
+   ]
+  },
+  {
+   "rung": 64000,
+   "pos": "10%",
+   "codeword": "HARVEST-420",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 64069,
+   "completion_tok": 8,
+   "elapsed_s": 69.9,
+   "prefill_tps": 916.6,
+   "content": "HARVEST-420"
+  },
+  {
+   "rung": 64000,
+   "pos": "25%",
+   "codeword": "TIMBER-918",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 63679,
+   "completion_tok": 7,
+   "elapsed_s": 66.13,
+   "prefill_tps": 963.0,
+   "content": "TIMBER-918"
+  },
+  {
+   "rung": 64000,
+   "pos": "50%",
+   "codeword": "DERRICK-934",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 64090,
+   "completion_tok": 8,
+   "elapsed_s": 70.82,
+   "prefill_tps": 905.0,
+   "content": "DERRICK-934"
+  },
+  {
+   "rung": 64000,
+   "pos": "75%",
+   "codeword": "COPPER-860",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 64033,
+   "completion_tok": 8,
+   "elapsed_s": 69.5,
+   "prefill_tps": 921.3,
+   "content": "COPPER-860"
+  },
+  {
+   "rung": 64000,
+   "pos": "90%",
+   "codeword": "TIMBER-265",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 64052,
+   "completion_tok": 7,
+   "elapsed_s": 70.73,
+   "prefill_tps": 905.5,
+   "content": "TIMBER-265"
+  },
+  {
+   "rung": 64000,
+   "pos": "97%",
+   "codeword": "VESSEL-463",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 64026,
+   "completion_tok": 7,
+   "elapsed_s": 63.67,
+   "prefill_tps": 1005.6,
+   "content": "VESSEL-463"
+  },
+  {
+   "rung": 64000,
+   "pos": "control",
+   "codeword": null,
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 63706,
+   "completion_tok": 2,
+   "elapsed_s": 66.15,
+   "prefill_tps": 963.1,
+   "content": "none"
+  },
+  {
+   "rung": 64000,
+   "rung_elapsed_s": 522.2,
+   "mem_avail_gb": [
+    null,
+    null
+   ],
+   "swap_used_gb": [
+    null,
+    null
+   ]
+  },
+  {
+   "rung": 128000,
+   "pos": "10%",
+   "codeword": "VESSEL-667",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 128069,
+   "completion_tok": 7,
+   "elapsed_s": 134.78,
+   "prefill_tps": 950.2,
+   "content": "VESSEL-667"
+  },
+  {
+   "rung": 128000,
+   "pos": "25%",
+   "codeword": "BEACON-114",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 128109,
+   "completion_tok": 8,
+   "elapsed_s": 132.42,
+   "prefill_tps": 967.4,
+   "content": "BEACON-114"
+  },
+  {
+   "rung": 128000,
+   "pos": "50%",
+   "codeword": "QUARRY-590",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 127382,
+   "completion_tok": 7,
+   "elapsed_s": 132.5,
+   "prefill_tps": 961.4,
+   "content": "QUARRY-590"
+  },
+  {
+   "rung": 128000,
+   "pos": "75%",
+   "codeword": "CINDER-278",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 128028,
+   "completion_tok": 7,
+   "elapsed_s": 130.74,
+   "prefill_tps": 979.3,
+   "content": "CINDER-278"
+  },
+  {
+   "rung": 128000,
+   "pos": "90%",
+   "codeword": "BEACON-761",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 128027,
+   "completion_tok": 8,
+   "elapsed_s": 130.64,
+   "prefill_tps": 980.0,
+   "content": "BEACON-761"
+  },
+  {
+   "rung": 128000,
+   "pos": "97%",
+   "codeword": "VESSEL-657",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 127404,
+   "completion_tok": 7,
+   "elapsed_s": 142.81,
+   "prefill_tps": 892.1,
+   "content": "VESSEL-657"
+  },
+  {
+   "rung": 128000,
+   "pos": "control",
+   "codeword": null,
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 127359,
+   "completion_tok": 2,
+   "elapsed_s": 137.59,
+   "prefill_tps": 925.6,
+   "content": "none"
+  },
+  {
+   "rung": 128000,
+   "rung_elapsed_s": 1037.5,
+   "mem_avail_gb": [
+    null,
+    null
+   ],
+   "swap_used_gb": [
+    null,
+    null
+   ]
+  },
+  {
+   "rung": 200000,
+   "pos": "10%",
+   "codeword": "DERRICK-565",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 199025,
+   "completion_tok": 8,
+   "elapsed_s": 227.19,
+   "prefill_tps": 876.0,
+   "content": "DERRICK-565"
+  },
+  {
+   "rung": 200000,
+   "pos": "25%",
+   "codeword": "CINDER-208",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 198950,
+   "completion_tok": 7,
+   "elapsed_s": 207.04,
+   "prefill_tps": 960.9,
+   "content": "CINDER-208"
+  },
+  {
+   "rung": 200000,
+   "pos": "50%",
+   "codeword": "ANVIL-918",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 200073,
+   "completion_tok": 8,
+   "elapsed_s": 242.2,
+   "prefill_tps": 826.1,
+   "content": "ANVIL-918"
+  },
+  {
+   "rung": 200000,
+   "pos": "75%",
+   "codeword": "VESSEL-934",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 198974,
+   "completion_tok": 7,
+   "elapsed_s": 215.62,
+   "prefill_tps": 922.8,
+   "content": "VESSEL-934"
+  },
+  {
+   "rung": 200000,
+   "pos": "90%",
+   "codeword": "CINDER-692",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 199009,
+   "completion_tok": 7,
+   "elapsed_s": 214.14,
+   "prefill_tps": 929.3,
+   "content": "CINDER-692"
+  },
+  {
+   "rung": 200000,
+   "pos": "97%",
+   "codeword": "LANTERN-131",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 198935,
+   "completion_tok": 8,
+   "elapsed_s": 241.03,
+   "prefill_tps": 825.4,
+   "content": "LANTERN-131"
+  },
+  {
+   "rung": 200000,
+   "pos": "control",
+   "codeword": null,
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 200083,
+   "completion_tok": 2,
+   "elapsed_s": 228.9,
+   "prefill_tps": 874.1,
+   "content": "none"
+  },
+  {
+   "rung": 200000,
+   "rung_elapsed_s": 1747.1,
+   "mem_avail_gb": [
+    null,
+    null
+   ],
+   "swap_used_gb": [
+    null,
+    null
+   ]
+  },
+  {
+   "rung": 250000,
+   "pos": "10%",
+   "codeword": "CINDER-227",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 250027,
+   "completion_tok": 7,
+   "elapsed_s": 279.75,
+   "prefill_tps": 893.8,
+   "content": "CINDER-227"
+  },
+  {
+   "rung": 250000,
+   "pos": "25%",
+   "codeword": "LANTERN-464",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 248828,
+   "completion_tok": 8,
+   "elapsed_s": 294.94,
+   "prefill_tps": 843.7,
+   "content": "LANTERN-464"
+  },
+  {
+   "rung": 250000,
+   "pos": "50%",
+   "codeword": "EMBER-395",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 250029,
+   "completion_tok": 6,
+   "elapsed_s": 295.23,
+   "prefill_tps": 846.9,
+   "content": "EMBER-395"
+  },
+  {
+   "rung": 250000,
+   "pos": "75%",
+   "codeword": "LANTERN-222",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 250026,
+   "completion_tok": 8,
+   "elapsed_s": 292.19,
+   "prefill_tps": 855.7,
+   "content": "LANTERN-222"
+  },
+  {
+   "rung": 250000,
+   "pos": "90%",
+   "codeword": "TIMBER-468",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 248781,
+   "completion_tok": 7,
+   "elapsed_s": 285.72,
+   "prefill_tps": 870.7,
+   "content": "TIMBER-468"
+  },
+  {
+   "rung": 250000,
+   "pos": "97%",
+   "codeword": "EMBER-641",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 250027,
+   "completion_tok": 6,
+   "elapsed_s": 304.84,
+   "prefill_tps": 820.2,
+   "content": "EMBER-641"
+  },
+  {
+   "rung": 250000,
+   "pos": "control",
+   "codeword": null,
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 250072,
+   "completion_tok": 2,
+   "elapsed_s": 298.6,
+   "prefill_tps": 837.5,
+   "content": "none"
+  },
+  {
+   "rung": 250000,
+   "rung_elapsed_s": 2186.3,
+   "mem_avail_gb": [
+    null,
+    null
+   ],
+   "swap_used_gb": [
+    null,
+    null
+   ]
+  }
+ ]
+}

@@ -1,0 +1,320 @@
+{
+ "args": {
+  "rungs": "8000,32000,64000,128000,200000,250000",
+  "positions": "early,mid,late",
+  "base": "http://spark:8000",
+  "seed": 20260901,
+  "outdir": "results"
+ },
+ "verdict": "FAIL (6 misses)",
+ "misses": [
+  {
+   "rung": 8000,
+   "pos": "late",
+   "finish": "stop",
+   "content": "payroll"
+  },
+  {
+   "rung": 32000,
+   "pos": "late",
+   "finish": "stop",
+   "content": "warrant"
+  },
+  {
+   "rung": 64000,
+   "pos": "late",
+   "finish": "stop",
+   "content": "invoice"
+  },
+  {
+   "rung": 128000,
+   "pos": "late",
+   "finish": "stop",
+   "content": "payroll"
+  },
+  {
+   "rung": 200000,
+   "pos": "late",
+   "finish": "stop",
+   "content": "invoice"
+  },
+  {
+   "rung": 250000,
+   "pos": "late",
+   "finish": "stop",
+   "content": "warrant"
+  }
+ ],
+ "results": [
+  {
+   "rung": 8000,
+   "pos": "early",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 8028,
+   "completion_tok": 13,
+   "elapsed_s": 5.22,
+   "prefill_tps": 1539.3,
+   "content": "SEAL-8K-EARLY-920"
+  },
+  {
+   "rung": 8000,
+   "pos": "mid",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 8028,
+   "completion_tok": 12,
+   "elapsed_s": 5.51,
+   "prefill_tps": 1456.0,
+   "content": "SEAL-8K-MID-571"
+  },
+  {
+   "rung": 8000,
+   "pos": "late",
+   "hit": false,
+   "finish": "stop",
+   "prompt_tok": 8028,
+   "completion_tok": 3,
+   "elapsed_s": 3.13,
+   "prefill_tps": 2568.0,
+   "content": "payroll"
+  },
+  {
+   "rung": 8000,
+   "rung_elapsed_s": 14.8,
+   "mem_avail_gb": [
+    null,
+    null
+   ],
+   "swap_used_gb": [
+    null,
+    null
+   ]
+  },
+  {
+   "rung": 32000,
+   "pos": "early",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 32028,
+   "completion_tok": 14,
+   "elapsed_s": 20.69,
+   "prefill_tps": 1548.3,
+   "content": "SEAL-32K-EARLY-955"
+  },
+  {
+   "rung": 32000,
+   "pos": "mid",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 32028,
+   "completion_tok": 13,
+   "elapsed_s": 18.56,
+   "prefill_tps": 1725.3,
+   "content": "SEAL-32K-MID-618"
+  },
+  {
+   "rung": 32000,
+   "pos": "late",
+   "hit": false,
+   "finish": "stop",
+   "prompt_tok": 32028,
+   "completion_tok": 3,
+   "elapsed_s": 8.34,
+   "prefill_tps": 3839.4,
+   "content": "warrant"
+  },
+  {
+   "rung": 32000,
+   "rung_elapsed_s": 52.4,
+   "mem_avail_gb": [
+    null,
+    null
+   ],
+   "swap_used_gb": [
+    null,
+    null
+   ]
+  },
+  {
+   "rung": 64000,
+   "pos": "early",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 64028,
+   "completion_tok": 14,
+   "elapsed_s": 35.79,
+   "prefill_tps": 1789.1,
+   "content": "SEAL-64K-EARLY-793"
+  },
+  {
+   "rung": 64000,
+   "pos": "mid",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 64028,
+   "completion_tok": 13,
+   "elapsed_s": 35.85,
+   "prefill_tps": 1786.2,
+   "content": "SEAL-64K-MID-649"
+  },
+  {
+   "rung": 64000,
+   "pos": "late",
+   "hit": false,
+   "finish": "stop",
+   "prompt_tok": 64028,
+   "completion_tok": 2,
+   "elapsed_s": 16.01,
+   "prefill_tps": 3998.7,
+   "content": "invoice"
+  },
+  {
+   "rung": 64000,
+   "rung_elapsed_s": 98.0,
+   "mem_avail_gb": [
+    null,
+    null
+   ],
+   "swap_used_gb": [
+    null,
+    null
+   ]
+  },
+  {
+   "rung": 128000,
+   "pos": "early",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 128028,
+   "completion_tok": 15,
+   "elapsed_s": 73.34,
+   "prefill_tps": 1745.7,
+   "content": "SEAL-128K-EARLY-398"
+  },
+  {
+   "rung": 128000,
+   "pos": "mid",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 128028,
+   "completion_tok": 14,
+   "elapsed_s": 69.54,
+   "prefill_tps": 1841.0,
+   "content": "SEAL-128K-MID-709"
+  },
+  {
+   "rung": 128000,
+   "pos": "late",
+   "hit": false,
+   "finish": "stop",
+   "prompt_tok": 128028,
+   "completion_tok": 3,
+   "elapsed_s": 35.6,
+   "prefill_tps": 3596.6,
+   "content": "payroll"
+  },
+  {
+   "rung": 128000,
+   "rung_elapsed_s": 202.5,
+   "mem_avail_gb": [
+    null,
+    null
+   ],
+   "swap_used_gb": [
+    null,
+    null
+   ]
+  },
+  {
+   "rung": 200000,
+   "pos": "early",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 200028,
+   "completion_tok": 15,
+   "elapsed_s": 174.5,
+   "prefill_tps": 1146.3,
+   "content": "SEAL-200K-EARLY-901"
+  },
+  {
+   "rung": 200000,
+   "pos": "mid",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 200028,
+   "completion_tok": 14,
+   "elapsed_s": 106.74,
+   "prefill_tps": 1873.9,
+   "content": "SEAL-200K-MID-277"
+  },
+  {
+   "rung": 200000,
+   "pos": "late",
+   "hit": false,
+   "finish": "stop",
+   "prompt_tok": 200028,
+   "completion_tok": 2,
+   "elapsed_s": 51.75,
+   "prefill_tps": 3865.5,
+   "content": "invoice"
+  },
+  {
+   "rung": 200000,
+   "rung_elapsed_s": 373.1,
+   "mem_avail_gb": [
+    null,
+    null
+   ],
+   "swap_used_gb": [
+    null,
+    null
+   ]
+  },
+  {
+   "rung": 250000,
+   "pos": "early",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 250028,
+   "completion_tok": 15,
+   "elapsed_s": 151.93,
+   "prefill_tps": 1645.7,
+   "content": "SEAL-250K-EARLY-507"
+  },
+  {
+   "rung": 250000,
+   "pos": "mid",
+   "hit": true,
+   "finish": "stop",
+   "prompt_tok": 250028,
+   "completion_tok": 14,
+   "elapsed_s": 150.77,
+   "prefill_tps": 1658.4,
+   "content": "SEAL-250K-MID-441"
+  },
+  {
+   "rung": 250000,
+   "pos": "late",
+   "hit": false,
+   "finish": "stop",
+   "prompt_tok": 250028,
+   "completion_tok": 3,
+   "elapsed_s": 157.5,
+   "prefill_tps": 1587.5,
+   "content": "warrant"
+  },
+  {
+   "rung": 250000,
+   "rung_elapsed_s": 513.5,
+   "mem_avail_gb": [
+    null,
+    null
+   ],
+   "swap_used_gb": [
+    null,
+    null
+   ]
+  }
+ ]
+}
